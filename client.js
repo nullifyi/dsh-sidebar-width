@@ -82,8 +82,6 @@ window.__ModuleLoader__.load({
     /** 账号/头像行的独立键与最低高度：它是单独一个可调单元，不跟上一块联动。 */
     const ACCOUNT_KEY = 'acct:0'
     const MIN_ACCOUNT = 26
-    /** 任何一块/一行都不能把内容顶出侧栏：超出就按“谁最高先压谁”回收。 */
-    const TRIM_ROUNDS = 8
 
     const FIXED_PANES = ['brand', 'new', 'nav', 'foot']
     const PANE_LABEL = { brand: '品牌行', new: '新会话', nav: '全局面板', main: '工作区与会话', foot: '账号与用量' }
@@ -473,9 +471,14 @@ window.__ModuleLoader__.load({
       return height > 0 ? height : 0
     }
 
+    // 记每个 pane 的“原生高度”：一旦我们给它写过高度，rect 就不再是原生值了，
+    // 直接拿 rect 做预算会把“上一轮压出来的高度”当成原生高度，导致预算反复自我放宽。
+    const paneNative = new WeakMap()
+
     function applyPaneSizing(panes, root) {
       const contentH = contentBoxHeight(root)
       const heights = {}
+      const nativeOf = {}
       const fixed = paneKeys(panes).filter((key) => key !== 'main')
       for (const id of fixed) {
         const el = paneElement(panes, id)
@@ -483,7 +486,10 @@ window.__ModuleLoader__.load({
         const saved = savedHeight(id)
         const rect = el.getBoundingClientRect()
         const min = MIN_PANE[id] || 18
-        const measured = Math.max(min, Math.round(rect.height || 0))
+        const natural = paneNative.get(el) ?? Math.max(min, Math.round(rect.height || 0))
+        paneNative.set(el, natural)
+        const measured = Math.max(min, Math.round(natural))
+        nativeOf[id] = measured
         heights[id] = saved === null ? measured : Math.max(min, saved)
       }
 
@@ -505,26 +511,18 @@ window.__ModuleLoader__.load({
         }
       }
 
-      // 被“空间不够”压过的值要写回存储，否则每次 apply 都会从原始大值重新算一遍，
-      // 布局永远在“撑开—压缩”之间来回抖，底栏就会压到上一层。
-      const clamped = { ...state.heights }
-      let changed = false
-      for (const id of fixed) {
-        const saved = savedHeight(id)
-        if (saved === null) continue
-        const h = heights[id]
-        if (typeof h === 'number' && h < saved) { clamped[id] = h; changed = true }
-      }
-      if (changed) {
-        state = { ...state, heights: clamped }
-        if (!drag) persist()
-      }
+      // 注意：这里的压缩**只用于本次渲染**，绝不写回存储。
+      // 曾经把压缩结果 persist 回去，结果 persist → 订阅 → apply → 再压缩，
+      // 布局在“撑开—压缩”之间来回跳（用户看到的就是整条侧栏闪烁、块忽大忽小）。
 
       for (const id of fixed) {
         const el = paneElement(panes, id)
         if (!el) continue
         const h = heights[id]
-        if (savedHeight(id) === null) {
+        // 没被拖过的块：只要这一轮没被预算压小，就完全交还原生布局；
+        // 被压小时仍要写高度（纯展示用，不落盘），否则它会按原生高度把下面顶出去。
+        const untouched = savedHeight(id) === null && h >= (nativeOf[id] || 0)
+        if (untouched) {
           // 没被调整过：完全交还原生布局，但仍要能被自身内容撑开。
           dropStyle(el, 'flex')
           dropStyle(el, 'flex-grow')
@@ -598,43 +596,35 @@ window.__ModuleLoader__.load({
 
     const naturalCache = new WeakMap()
 
-    function signatureOf(pane, kids) {
-      let text = 0
-      let zooms = ''
+    /** 我们已经给这些子元素写上的 zoom（0 表示没有）。只读，不改 DOM。 */
+    function currentZoomOf(kids) {
       for (const kid of kids) {
-        text += (kid.textContent || '').length
-        zooms += ',' + (kid.getAttribute(ATTR_ZOOM) || '')
+        const raw = kid.getAttribute(ATTR_ZOOM)
+        if (raw !== null) {
+          const value = Number(raw)
+          if (value > 0) return value
+        }
       }
-      // 行高覆盖会改变内容高度，但不改变子元素个数与文字 → 必须进签名，
-      // 否则拖过某一行之后 pane 的“自然高度”还是旧值，字号会突然被算小/算大。
-      let rowsSig = ''
-      for (const key of Object.keys(state.rows || {})) rowsSig += ',' + key + '=' + state.rows[key]
-      return kids.length + '|' + Math.round(pane.clientWidth || 0) + '|' + text + '|' + zooms + '|' + rowsSig
+      return 1
     }
 
-    /** 内容自然高度 = 全部子元素清零 zoom 后 pane 的滚动高度。 */
+    /**
+     * 内容自然高度（未缩放时的 pane 高度）。**只读**：不再为了量尺寸去清 zoom、
+     * 去改 style——那种“量一次写一次”会在宿主的 MutationObserver 上形成
+     * 写 → 观察 → 再写 的自激循环，表现就是整条侧栏不停闪烁。
+     * 当前渲染高度已知，除以当前 zoom 就是自然高度。
+     */
     function naturalHeight(pane, kidsIn) {
       const kids = kidsIn || fitChildren(pane)
       if (!pane || kids.length === 0) return 0
-      const sig = signatureOf(pane, kids)
       const cached = naturalCache.get(pane)
-      if (cached && cached.sig === sig) return cached.h
-      const saved = kids.map((kid) => kid.getAttribute(ATTR_ZOOM))
-      for (const kid of kids) clearChildZoom(kid)
-      let h = 0
-      try { h = pane.scrollHeight || 0 } catch (error) { h = 0 }
-      if (!h) {
-        for (const kid of kids) {
-          const rect = kid.getBoundingClientRect()
-          h = Math.max(h, rect.height + rect.top - pane.getBoundingClientRect().top)
-        }
-      }
-      for (let i = 0; i < kids.length; i += 1) {
-        const raw = saved[i]
-        if (raw !== null) setChildZoom(kids[i], Number(raw) || 1)
-      }
-      const value = Math.max(0, Math.round(h))
-      naturalCache.set(pane, { sig, h: value })
+      if (cached && cached.count === kids.length) return cached.h
+      const zoom = currentZoomOf(kids) || 1
+      let rendered = 0
+      try { rendered = pane.scrollHeight || 0 } catch (error) { rendered = 0 }
+      if (!rendered) rendered = pane.getBoundingClientRect().height || 0
+      const value = Math.max(0, Math.round(rendered / zoom))
+      naturalCache.set(pane, { count: kids.length, h: value })
       return value
     }
 
@@ -1155,66 +1145,6 @@ window.__ModuleLoader__.load({
         for (let i = 0; i < scope.rows.length; i += 1) map.set(scope.id + ':' + i, scope.rows[i])
       }
       return map
-    }
-
-    /** root 里的内容总高：scrollHeight 拿不到（jsdom/部分宿主）就用子元素高度累加。 */
-    function contentOverflow(root) {
-      const contentH = contentBoxHeight(root)
-      if (!contentH) return 0
-      let sum = 0
-      for (const child of root.children) {
-        if (ownNode(child)) continue
-        sum += Math.round(child.getBoundingClientRect().height || 0)
-      }
-      const scrolled = Math.round(root.scrollHeight || 0)
-      const total = Math.max(scrolled, sum)
-      return Math.round(total - contentH)
-    }
-
-    /**
-     * 收尾保护：任何块/行都不许把内容顶出侧栏（顶出后就会盖住上面那一层）。
-     * 量一次 root 的溢出量，再从“最高且还能继续压”的单元开始回收。
-     */
-    function enforceBudget(panes, root) {
-      const contentH = contentBoxHeight(root)
-      if (!contentH) return 0
-      let overflow = contentOverflow(root)
-      if (overflow <= 2) return 0
-      const rows = rowElementsByKey(panes)
-      const heights = { ...state.heights }
-      const rowNext = { ...rowOverrides() }
-      let trimmed = 0
-      for (let round = 0; round < TRIM_ROUNDS && overflow > 2; round += 1) {
-        let pick = null
-        for (const key of paneKeys(panes)) {
-          if (key === 'main' || isPaneHidden(key)) continue
-          const saved = savedHeight(key)
-          if (saved === null) continue
-          const min = MIN_PANE[key] || MIN_ROW
-          if (saved - min <= 0) continue
-          if (!pick || saved > pick.h) pick = { kind: 'pane', key, h: saved, min }
-        }
-        for (const key of rows.keys()) {
-          const saved = rowNext[key]
-          if (typeof saved !== 'number') continue
-          const min = rowMin(key)
-          if (saved - min <= 0) continue
-          if (!pick || saved > pick.h) pick = { kind: 'row', key, h: saved, min }
-        }
-        if (!pick) break
-        const cut = Math.min(overflow, pick.h - pick.min)
-        if (cut <= 0) break
-        if (pick.kind === 'pane') heights[pick.key] = pick.h - cut
-        else rowNext[pick.key] = pick.h - cut
-        overflow -= cut
-        trimmed += cut
-      }
-      if (!trimmed) return 0
-      state = { ...state, heights, rows: rowNext }
-      if (!drag) persist()
-      applyPaneSizing(panes, root)
-      applyRowSizing(panes)
-      return trimmed
     }
 
     /**
@@ -1813,6 +1743,13 @@ window.__ModuleLoader__.load({
 
     let scheduled = false
     let listening = false
+    // 渲染签名：同样的输入绝不重写一遍 DOM。宿主的 MutationObserver/ResizeObserver
+    // 会在我们写完之后再回调一次，没有这个闸门就会变成“写 → 观察 → 再写”的死循环。
+    let lastSig = ''
+    let lastStatus = ''
+    // 我们自己写 DOM 时置真：MutationObserver/ResizeObserver 的读回调据此跳过，
+    // 否则“写样式 → 观察器 → 再写”会自激成整条侧栏闪烁。
+    let writing = false
 
     function schedule() {
       if (scheduled) return
@@ -1821,12 +1758,21 @@ window.__ModuleLoader__.load({
         scheduled = false
         apply()
       }
-      if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(run)
-      else window.setTimeout(run, 16)
+      if (typeof window.requestAnimationFrame === 'function') {
+        const handle = window.requestAnimationFrame(run)
+        // rAF 在后台/无头窗口里可能被饿死，落一个兜底定时器保证状态一定会落地。
+        window.setTimeout(() => {
+          if (!scheduled) return
+          scheduled = false
+          try { window.cancelAnimationFrame(handle) } catch (error) { /* 忽略 */ }
+          apply()
+        }, 120)
+      } else window.setTimeout(run, 16)
     }
 
     function apply() {
       if (!listening) return
+      writing = true
       try {
         const root = findRoot()
         if (!root) { ui.root = null; status('no-root'); return }
@@ -1838,6 +1784,9 @@ window.__ModuleLoader__.load({
           ui.sashes = {}
           writeStyle(dock, 'display', 'none')
           status('rail')
+          // 退出窄轨时布局要整块重画，别被渲染签名挡住。
+          lastSig = ''
+          lastStatus = 'rail'
           return
         }
         ensureGutter(root)
@@ -1846,9 +1795,29 @@ window.__ModuleLoader__.load({
         if (!panes) { status('no-blocks'); return }
         ui.panes = panes
 
+        let shape = 0
+        for (const id of paneKeys(panes)) {
+          const el = paneElement(panes, id)
+          shape = shape * 131 + (el ? el.children.length + 1 : 0)
+        }
+        const sig = [
+          paneKeys(panes).join(','),
+          shape,
+          Math.round(root.clientHeight || 0),
+          Math.round(root.clientWidth || 0),
+          JSON.stringify(state.heights),
+          JSON.stringify(state.rows),
+          JSON.stringify(state.hidden),
+          accountEl ? 1 : 0,
+        ].join('|')
+        if (sig === lastSig) { if (lastStatus) status(lastStatus); return }
+        lastSig = sig
+
         markBlocks(panes)
         accountEl = accountRow(panes)
         applyCollapse(panes)
+        // 行高先落地：块级缩放要能看见 ATTR_ROW，才不会把已单独调过的行再缩一次。
+        applyRowSizing(panes)
         const sizing = applyPaneSizing(panes, root)
         const fixedKeys = paneKeys(panes).filter((key) => key !== 'main')
 
@@ -1865,10 +1834,7 @@ window.__ModuleLoader__.load({
         }
 
         renderSashes(root, panes)
-        applyRowSizing(panes)
         applyAccountPin()
-        const trimmed = enforceBudget(panes, root)
-        if (trimmed) applyAccountPin()
         sweepRowNodes()
 
         // 只要有任何一块/一行被调过尺寸，就把侧栏裁到自己的盒子里：
@@ -1882,9 +1848,15 @@ window.__ModuleLoader__.load({
 
         const h = []
         for (const id of fixedKeys) if (savedHeight(id) !== null) h.push(id + '=' + savedHeight(id))
-        status('panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' trim:' + trimmed + ' hidden:' + state.hidden.length)
+        lastStatus = 'panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' trim:0 hidden:' + state.hidden.length
+        status(lastStatus)
       } catch (error) {
         fault(error && error.message ? error.message : String(error))
+      } finally {
+        // 我们这一轮写出来的 MutationRecord 先抽干，再解锁；
+        // 用微任务解锁会在同步环境（测试、某些宿主事件）里把观察器一直卡住。
+        try { if (rootObserver) rootObserver.takeRecords() } catch (error) { /* 忽略 */ }
+        writing = false
       }
     }
 
@@ -1893,10 +1865,10 @@ window.__ModuleLoader__.load({
     let ensureTimer = 0
     let observedRoot = null
 
-    function onResize() { schedule() }
+    function onResize() { if (!writing) schedule() }
 
     /** 滚动会让缝的坐标失效，顺手把提示线收起来。 */
-    function onScroll() { hideRowHint(); schedule() }
+    function onScroll() { hideRowHint(); if (!writing) schedule() }
 
     function start() {
       if (listening) return
@@ -1905,11 +1877,18 @@ window.__ModuleLoader__.load({
       schedule()
 
       try {
-        rootObserver = new MutationObserver(() => schedule())
+        rootObserver = new MutationObserver((records) => {
+          if (writing) return
+          // 结构变了（React 重挂、插件插入节点）就必须重画；只是属性变化可以交给签名拦截。
+          for (const record of records) {
+            if (record.type === 'childList') { lastSig = ''; break }
+          }
+          schedule()
+        })
       } catch (error) { rootObserver = null }
 
       try {
-        resizeObserver = new ResizeObserver(schedule)
+        resizeObserver = new ResizeObserver(() => { if (!writing) schedule() })
       } catch (error) { resizeObserver = null }
 
       hookRootObserver()
