@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.16'
+    const PLUGIN_VERSION = '0.6.17'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -1221,34 +1221,51 @@ window.__ModuleLoader__.load({
      */
     function rowScopes(panes) {
       const scopes = []
-      const push = (id, container) => {
-        if (!container) return
-        const rows = []
-        for (const child of container.children) {
-          if (ownNode(child)) continue
-          if (child === accountEl) continue // 头像行不参与缩放，也不给它的缝
-          rows.push(child)
-        }
-        // 只有一行也要给缝（用户要求“横线上的都得能调整高度”）；但横向排列的容器不算行。
-        if (!rows.length) return
-        const flow = window.getComputedStyle(container)
-        if (flow && (flow.flexDirection === 'row' || flow.flexDirection === 'row-reverse')) return
-        scopes.push({ id, container, rows })
+      const seen = new Set()
+      const flowOf = (el) => {
+        try {
+          const cs = window.getComputedStyle(el)
+          return cs && typeof cs.flexDirection === 'string' ? cs.flexDirection : ''
+        } catch (error) { return '' }
       }
-      if (panes.nav) push('nav', panes.nav)
+      const collect = (container, id, depth) => {
+        if (!container || depth > 3 || seen.has(container)) return
+        seen.add(container)
+        // 穿透纯包裹层：宿主很多容器只有 1 个子元素，真正的一排在更里面。
+        let node = container
+        for (let guard = 0; guard < 4; guard += 1) {
+          const kids = Array.from(node.children).filter((child) => !ownNode(child))
+          if (kids.length !== 1) break
+          const inner = kids[0]
+          if (!inner || (inner.children && inner.children.length === 0)) break
+          node = inner
+        }
+        const rows = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
+        if (rows.length) {
+          const flow = flowOf(node)
+          if (!(flow === 'row' || flow === 'row-reverse')) scopes.push({ id, container: node, rows })
+        }
+        if (depth >= 3) return
+        const kids = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
+        for (let i = 0; i < kids.length; i += 1) {
+          const child = kids[i]
+          if (!child.children || !child.children.length) continue
+          collect(child, id + '-' + i, depth + 1)
+        }
+      }
+      if (panes.nav) collect(panes.nav, 'nav', 0)
       if (panes.foot) {
-        push('foot', panes.foot)
         let index = 0
         for (const child of panes.foot.children) {
           if (ownNode(child)) continue
-          const id = 'foot' + index
+          collect(child, 'foot' + index, 0)
           index += 1
-          if (child.children && child.children.length >= 2) push(id, child)
         }
       }
       // 头像行是单独一个可调单元：不跟上一块联动，也不能被压到看不见。
       if (accountEl && accountEl.parentNode) {
-        scopes.push({ id: 'acct', container: accountEl.parentNode, rows: [accountEl], single: true })
+        const rect = accountEl.getBoundingClientRect()
+        if (rect && rect.height >= 1) scopes.push({ id: 'acct', container: accountEl.parentNode, rows: [accountEl], single: true })
       }
       return scopes
     }
@@ -1448,7 +1465,12 @@ window.__ModuleLoader__.load({
       for (const scope of scopes) {
         if (!scopeVisible(scope)) continue
         const containerRect = scope.container.getBoundingClientRect()
-        if (!containerRect.height) continue
+        // 容器本身没尺寸（有的宿主用内容撑开、或包裹层是 display:contents）时，
+        // 用行自己的左右边界，别把缝丢掉。
+        const span = (rect) => ({
+          x0: containerRect.height ? containerRect.left : rect.left,
+          x1: containerRect.height ? containerRect.right : rect.right,
+        })
         if (scope.single) {
           // 单行 scope（账号行）：缝落在这一行的“上沿”，往上拖就是压这一行。
           const rect = scope.rows[0].getBoundingClientRect()
@@ -1457,8 +1479,7 @@ window.__ModuleLoader__.load({
               key: scope.id + ':' + 0,
               row: scope.rows[0],
               y: rect.top,
-              x0: containerRect.left,
-              x1: containerRect.right,
+              ...span(rect),
               edge: 'top',
             })
           }
@@ -1471,8 +1492,7 @@ window.__ModuleLoader__.load({
             key: scope.id + ':' + i,
             row: scope.rows[i],
             y: rect.bottom,
-            x0: containerRect.left,
-            x1: containerRect.right,
+            ...span(rect),
           })
         }
       }
@@ -1809,6 +1829,8 @@ window.__ModuleLoader__.load({
       const root = panes.foot
       const avatar = avatarNode(root)
       if (!avatar) return guessAccountRow(panes)
+      const avatarRect = avatar.getBoundingClientRect()
+      if (!avatarRect || avatarRect.height < 8 || avatarRect.width < 8) return guessAccountRow(panes)
       const containers = [root]
       for (const child of root.children) if (!ownNode(child)) containers.push(child)
       let node = avatar
