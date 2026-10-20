@@ -112,6 +112,15 @@
             "url": "https://github.com/nullifyi/dsh-sidebar-width",
             "commit": "32a29c7ece3363a678a81300d68c5c9db4693202"
           }
+        },
+        {
+          "version": "0.6.4",
+          "publishTimestamp": 1792512600,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/nullifyi/dsh-sidebar-width",
+            "commit": "225c15ccc001c24bc1a66f72c3e362e52fa56702"
+          }
         }
       ]
     }
