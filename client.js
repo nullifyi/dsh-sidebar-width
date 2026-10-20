@@ -239,11 +239,12 @@ window.__ModuleLoader__.load({
           : []
         const heights = {}
         if (parsed.heights && typeof parsed.heights === 'object') {
-          for (const id of FIXED_PANES) {
+          for (const id of Object.keys(parsed.heights)) {
+            if (!FIXED_PANES.includes(id) && !/^extra:\d+$/.test(id)) continue
             const n = Number(parsed.heights[id])
             if (!Number.isFinite(n)) continue
             const h = Math.round(n)
-            if (h >= MIN_PANE[id]) heights[id] = h
+            if (h >= (MIN_PANE[id] || 18)) heights[id] = h
           }
         }
         // 行级覆盖：键形如 `nav:2` / `foot0:1`，值是该行的固定高度。
@@ -368,11 +369,44 @@ window.__ModuleLoader__.load({
         null
 
       if (!nav && !main && !foot) return null
-      return { brand, new: fresh, nav, main, foot, kids }
+      // 其它插件往 root 里加的东西（状态条、宠物、自定义区块）也算可调 pane：
+      // 它们各自带自己的分割条，不需要改本插件。
+      const extras = kids.filter((el) => el !== brand && el !== fresh && el !== nav && el !== main && el !== foot)
+      const ordered = []
+      for (const el of kids) {
+        if (el === brand) ordered.push('brand')
+        else if (el === fresh) ordered.push('new')
+        else if (el === nav) ordered.push('nav')
+        else if (el === main) ordered.push('main')
+        else if (el === foot) ordered.push('foot')
+        else ordered.push('extra:' + extras.indexOf(el))
+      }
+      return { brand, new: fresh, nav, main, foot, kids, extras, ordered }
     }
 
     function paneElement(panes, id) {
-      return panes ? panes[id] || null : null
+      if (!panes || !id) return null
+      if (id.indexOf('extra:') === 0) return panes.extras ? panes.extras[Number(id.slice(6))] || null : null
+      return panes[id] || null
+    }
+
+    /** root 里现存 pane 的 key，按 DOM 顺序。 */
+    function paneKeys(panes) {
+      if (!panes || !panes.ordered) return []
+      return panes.ordered.filter((key) => paneElement(panes, key))
+    }
+
+    /** 每个分割条改的是哪一块、方向如何：main|foot 这一条反向。 */
+    function sashSpecFor(above, below) {
+      if (above === 'main') return { above, below, target: below, inverted: true }
+      return { above, below, target: above, inverted: false }
+    }
+
+    /** 稳定 id：老的四条沿用旧名，插件新加的块用 `x:<above>`。 */
+    function sashIdFor(above) {
+      if (above === 'brand' || above === 'new' || above === 'nav') return above
+      if (above === 'main') return 'foot'
+      return 'x:' + above
     }
 
     function blockElements(panes, id) {
@@ -436,24 +470,27 @@ window.__ModuleLoader__.load({
     function applyPaneSizing(panes, root) {
       const contentH = contentBoxHeight(root)
       const heights = {}
-      for (const id of FIXED_PANES) {
+      const fixed = paneKeys(panes).filter((key) => key !== 'main')
+      for (const id of fixed) {
         const el = paneElement(panes, id)
         if (!el) continue
         const saved = savedHeight(id)
         const rect = el.getBoundingClientRect()
-        const measured = Math.max(MIN_PANE[id], Math.round(rect.height || 0))
-        heights[id] = saved === null ? measured : Math.max(MIN_PANE[id], saved)
+        const min = MIN_PANE[id] || 18
+        const measured = Math.max(min, Math.round(rect.height || 0))
+        heights[id] = saved === null ? measured : Math.max(min, saved)
       }
 
       // 总高不能超过内容高度：超了就从 nav → foot → new → brand 依次压回去。
       if (contentH > 0) {
         let total = 0
-        for (const id of FIXED_PANES) total += heights[id] || 0
+        for (const id of fixed) total += heights[id] || 0
         let overflow = total + MIN_MAIN - contentH
-        for (const id of ['nav', 'foot', 'new', 'brand']) {
+        const squeeze = ['nav', 'foot', 'new', 'brand'].concat(fixed.filter((k) => !['nav', 'foot', 'new', 'brand'].includes(k)))
+        for (const id of squeeze) {
           if (overflow <= 0) break
           const current = heights[id] || 0
-          const room = Math.max(0, current - MIN_PANE[id])
+          const room = Math.max(0, current - (MIN_PANE[id] || 18))
           const take = Math.min(room, overflow)
           if (take > 0) {
             heights[id] = current - take
@@ -462,7 +499,7 @@ window.__ModuleLoader__.load({
         }
       }
 
-      for (const id of FIXED_PANES) {
+      for (const id of fixed) {
         const el = paneElement(panes, id)
         if (!el) continue
         const h = heights[id]
@@ -677,7 +714,7 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 自有节点 ---------------- */
 
-    const ui = { dock: null, gutter: null, root: null, panes: null, sashes: {}, rowScopes: [], rowHint: null, rowSeam: null }
+    const ui = { dock: null, gutter: null, root: null, panes: null, sashes: {}, sashSpec: {}, rowScopes: [], rowHint: null, rowSeam: null }
 
     function ensureDock(root) {
       if (ui.dock && ui.dock.isConnected) return ui.dock
@@ -728,13 +765,19 @@ window.__ModuleLoader__.load({
 
     /* ---------------- sash ---------------- */
 
+    function sashLabel(sashId) {
+      const spec = ui.sashSpec[sashId]
+      const key = spec ? spec.target : SASH_TARGET[sashId] || sashId
+      return PANE_LABEL[key] || key
+    }
+
     function makeSash(id) {
       const sash = document.createElement('div')
       sash.setAttribute(ATTR_SASH, id)
       sash.setAttribute('role', 'separator')
       sash.setAttribute('aria-orientation', 'horizontal')
-      sash.setAttribute('aria-label', '调整' + (PANE_LABEL[SASH_TARGET[id]] || id) + '高度')
-      sash.title = '拖动：调整「' + (PANE_LABEL[SASH_TARGET[id]] || id) + '」高度（双击复位）'
+      sash.setAttribute('aria-label', '调整' + sashLabel(id) + '高度')
+      sash.title = '拖动：调整「' + sashLabel(id) + '」高度（双击复位）'
       sash.addEventListener('pointerdown', (event) => onSashDown(event, id))
       sash.addEventListener('dblclick', (event) => {
         event.preventDefault()
@@ -751,12 +794,18 @@ window.__ModuleLoader__.load({
       const gutter = ensureGutter(root)
       ensureCollapseButtons(gutter)
       const wanted = []
-      for (const item of SASHES) {
-        const above = paneElement(panes, item.above)
-        const below = paneElement(panes, item.below)
+      const keys = paneKeys(panes)
+      ui.sashSpec = {}
+      for (let i = 1; i < keys.length; i += 1) {
+        const aboveKey = keys[i - 1]
+        const belowKey = keys[i]
+        const above = paneElement(panes, aboveKey)
+        const below = paneElement(panes, belowKey)
         if (!above || !below) continue
-        if (isPaneHidden(item.above) || isPaneHidden(item.below)) continue
-        wanted.push({ id: item.id, anchor: above, below })
+        if (paneHidden(aboveKey) || paneHidden(belowKey)) continue
+        const id = sashIdFor(aboveKey)
+        ui.sashSpec[id] = sashSpecFor(aboveKey, belowKey)
+        wanted.push({ id, anchor: above, below })
       }
 
       const seen = new Set()
@@ -781,6 +830,16 @@ window.__ModuleLoader__.load({
       }
     }
 
+    /** 单个 pane 是否被折叠藏起来了（foot 折叠只藏内容，pane 本身还在）。 */
+    function paneHidden(key) {
+      if (!key) return false
+      if (key === 'brand' || key === 'new') return isHidden('header')
+      if (key === 'nav') return isHidden('nav')
+      if (key === 'main') return isHidden('main')
+      if (key === 'foot') return false
+      return false
+    }
+
     function isPaneHidden(id) {
       if (id === 'main') return isHidden('main')
       if (id === 'nav') return isHidden('nav')
@@ -795,7 +854,8 @@ window.__ModuleLoader__.load({
     function onSashDown(event, sashId) {
       if (!listening || drag) return
       if (event.pointerType === 'mouse' && typeof event.button === 'number' && event.button !== 0) return
-      const target = SASH_TARGET[sashId]
+      const spec = ui.sashSpec[sashId]
+      const target = spec ? spec.target : SASH_TARGET[sashId]
       const panes = ui.panes
       if (!target || !panes || !paneElement(panes, target)) return
       event.preventDefault()
@@ -805,28 +865,33 @@ window.__ModuleLoader__.load({
       const contentH = root ? contentBoxHeight(root) : 0
       // 基准用“未被压缩时的内容高度”，否则被 fit 压缩过的块会把起点算小。
       const heights = {}
-      for (const id of FIXED_PANES) {
+      const fixed = paneKeys(panes).filter((key) => key !== 'main')
+      for (const id of fixed) {
         const el = paneElement(panes, id)
         const saved = savedHeight(id)
-        heights[id] = saved !== null ? saved : el ? Math.max(MIN_PANE[id] || 0, unconstrainedHeight(el)) : 0
+        heights[id] = saved !== null ? saved : el ? Math.max(MIN_PANE[id] || 18, unconstrainedHeight(el)) : 0
       }
 
+      // 原生高度：拖回这个值就等于“取消覆盖”，不能拿当前（可能已被压缩的）高度当基准。
+      const targetEl = paneElement(panes, target)
+      const native = targetEl ? Math.max(MIN_PANE[target] || 18, unconstrainedHeight(targetEl)) : heights[target] || 18
+
       // 可增长的上限：内容高度 − 主区下限 − 其它固定块的当前高度。
-      const others = FIXED_PANES.filter((id) => id !== target).reduce((sum, id) => sum + (heights[id] || 0), 0)
+      const others = fixed.filter((id) => id !== target).reduce((sum, id) => sum + (heights[id] || 0), 0)
       const max = Math.max(MIN_PANE[target] || 22, contentH - MIN_MAIN - others)
       // main|foot 这条分界反向：往上拖 = foot 变高。
-      const inverted = sashId === 'foot'
+      const inverted = spec ? spec.inverted : sashId === 'foot'
 
       drag = {
         sashId,
         target,
         inverted,
         y0: event.clientY,
-        h0: heights[target] || MIN_PANE[target],
-        natural: heights[target] || MIN_PANE[target],
-        min: MIN_PANE[target] || 22,
+        h0: heights[target] || MIN_PANE[target] || 18,
+        natural: native,
+        min: MIN_PANE[target] || 18,
         max,
-        h: heights[target] || MIN_PANE[target],
+        h: heights[target] || MIN_PANE[target] || 18,
       }
       if (root) root.setAttribute('data-dsh-sw-dragging', '1')
       const sash = ui.sashes[sashId]
@@ -894,7 +959,8 @@ window.__ModuleLoader__.load({
     }
 
     function resetPane(sashId) {
-      const target = SASH_TARGET[sashId]
+      const spec = ui.sashSpec[sashId]
+      const target = spec ? spec.target : SASH_TARGET[sashId]
       if (!target) return
       const next = { ...state.heights }
       delete next[target]
@@ -1256,8 +1322,41 @@ window.__ModuleLoader__.load({
       if (panes.foot) panes.foot.setAttribute(ATTR_BLOCK, 'foot')
     }
 
+    /**
+     * 底部区折叠：头像那一行留在原地（它就在 footArea 里），
+     * 只把这条路径上的旁支藏起来 —— 折叠底部不会连头像一起消失。
+     */
+    function collapseFoot(panes, hidden) {
+      const foot = panes.foot
+      if (!foot) return
+      writeStyle(foot, 'display', '')
+      if (!hidden) {
+        for (const el of Array.from(foot.querySelectorAll('*'))) {
+          if (ownNode(el)) continue
+          if (el.style.getPropertyValue('display') === 'none') dropStyle(el, 'display')
+        }
+        return
+      }
+      const keep = accountEl && foot.contains(accountEl) ? accountEl : null
+      if (!keep) return
+      let node = keep
+      while (node && node !== foot) {
+        const parent = node.parentNode
+        if (!parent) break
+        for (const child of parent.children) {
+          if (child === node || ownNode(child)) continue
+          writeStyle(child, 'display', 'none')
+        }
+        node = parent
+      }
+      writeStyle(keep, 'display', '')
+      writeStyle(keep, 'margin-top', 'auto', 'important')
+    }
+
     function applyCollapse(panes) {
+      if (panes.foot) collapseFoot(panes, isHidden('foot'))
       for (const id of BLOCK_ORDER) {
+        if (id === 'foot') continue
         const hidden = isHidden(id)
         for (const paneId of panesForBlock(id)) {
           const el = paneElement(panes, paneId)
@@ -1279,8 +1378,19 @@ window.__ModuleLoader__.load({
       for (const id of BLOCK_ORDER) {
         const button = gutter.querySelector('[data-dsh-sw-collapse="' + id + '"]')
         if (!button) continue
+        if (isHidden(id)) {
+          // 折叠后按钮依旧存在：贴在图标坞上方，点一下即可展开，不依赖图标坞。
+          const dock = ui.dock
+          const dockRect = dock && !dock.hidden ? dock.getBoundingClientRect() : null
+          const top = dockRect ? Math.round(dockRect.top - rootRect.top - 24) : 0
+          writeStyle(button, 'display', '')
+          writeStyle(button, 'left', '0px')
+          writeStyle(button, 'top', Math.max(0, top) + 'px')
+          writeText(button, 'title', '展开：' + (BLOCK_LABEL[id] || id))
+          continue
+        }
         const target = blockElements(panes, id)[0]
-        if (!target || isHidden(id)) { writeStyle(button, 'display', 'none'); continue }
+        if (!target) { writeStyle(button, 'display', 'none'); continue }
         const rect = target.getBoundingClientRect()
         if (!rect || rect.height < 1) { writeStyle(button, 'display', 'none'); continue }
         writeStyle(button, 'display', '')
@@ -1534,12 +1644,14 @@ window.__ModuleLoader__.load({
         ui.panes = panes
 
         markBlocks(panes)
+        accountEl = accountRow(panes)
         applyCollapse(panes)
         const sizing = applyPaneSizing(panes, root)
+        const fixedKeys = paneKeys(panes).filter((key) => key !== 'main')
 
         // 被调整过高度的固定块：内容放不下就等比缩字号。
         let fitted = 0
-        for (const id of FIXED_PANES) {
+        for (const id of fixedKeys) {
           const el = paneElement(panes, id)
           if (!el) continue
           if (isPaneHidden(id)) { clearFit(el); continue }
@@ -1549,16 +1661,15 @@ window.__ModuleLoader__.load({
           if (z < 1) fitted += 1
         }
 
-        accountEl = accountRow(panes)
         renderSashes(root, panes)
         applyRowSizing(panes)
         applyAccountPin()
         sweepRowNodes()
-        applyCollapseButtons(panes, root)
         renderDock(panes, root, dock)
+        applyCollapseButtons(panes, root)
 
         const h = []
-        for (const id of FIXED_PANES) if (savedHeight(id) !== null) h.push(id + '=' + savedHeight(id))
+        for (const id of fixedKeys) if (savedHeight(id) !== null) h.push(id + '=' + savedHeight(id))
         status('panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' hidden:' + state.hidden.length)
       } catch (error) {
         fault(error && error.message ? error.message : String(error))
