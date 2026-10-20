@@ -49,6 +49,11 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 常量 ---------------- */
 
+    // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
+    // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
+    const PLUGIN_VERSION = '0.6.9'
+    const BOOT_KEY = 'dsh-sidebar-sections:boot'
+    const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v4'
     const LEGACY_KEY = 'dsh-sidebar-sections:v2'
     // v3 的行高是 0.6.1 早期版本在真实宿主里写坏的（行被压到十几像素、字号缩到底），旧值一律不继承。
@@ -80,8 +85,8 @@ window.__ModuleLoader__.load({
       const nat = Math.round(natural || 0)
       return nat > 0 ? Math.min(hard, Math.max(14, nat)) : hard
     }
-    /** 主区（工作区/会话）至少留这么高，否则页面等于没了。 */
-    const MIN_MAIN = 64
+    /** 主区（工作区/会话）至少留这么高，否则只剩一条被截断的会话行，看起来像“压住了”。 */
+    const MIN_MAIN = 96
     /** 内容超过分配高度时，最多缩到原尺寸的 42%（字号 14 → 5.9，仍可见）。 */
     const MIN_FIT = 0.42
     /** 单行最低高度：再低就点不到这一行里的东西了。 */
@@ -1827,6 +1832,72 @@ window.__ModuleLoader__.load({
       } catch (error) { /* 无 DOM */ }
     }
 
+    let booted = false
+    let dumpScheduled = false
+
+    /** 每次加载写一条启动记录：宿主跑的是哪个版本、什么时候启动，事后可直接查 localStorage。 */
+    function markBoot() {
+      if (booted) return
+      booted = true
+      try {
+        window.localStorage.setItem(BOOT_KEY, JSON.stringify({ v: PLUGIN_VERSION, t: Date.now() }))
+      } catch (error) { /* 隐私模式等不可写时忽略 */ }
+      try {
+        document.documentElement.setAttribute('data-dsh-sw-version', PLUGIN_VERSION)
+      } catch (error) { /* 无 DOM */ }
+    }
+
+    /**
+     * 启动后写一份现场快照到 localStorage（只写一次，约几 KB）。
+     * 真实宿主里出问题时不需要用户开 DevTools：直接读这个键就能知道
+     * 跑的是哪一版、各块的实际矩形、面板列表里到底有哪几行。
+     */
+    function writeDump() {
+      if (!ui.root || !ui.panes) return
+      try {
+        const rect = (el) => {
+          if (!el) return null
+          const r = el.getBoundingClientRect()
+          return r ? { top: Math.round(r.top), left: Math.round(r.left), w: Math.round(r.width), h: Math.round(r.height) } : null
+        }
+        const describe = (el) => {
+          const cs = window.getComputedStyle(el)
+          return {
+            tag: el.tagName.toLowerCase(),
+            cls: String(el.className || '').slice(0, 60),
+            text: String(el.textContent || '').trim().slice(0, 40),
+            rect: rect(el),
+            display: cs.display,
+            height: cs.height,
+            flexBasis: cs.flexBasis,
+            zoom: el.style.getPropertyValue('zoom') || ''
+          }
+        }
+        const panes = paneKeys(ui.panes).map((id) => {
+          const el = paneElement(ui.panes, id)
+          return { id, hidden: paneHidden(id), ...describe(el) }
+        })
+        const nav = paneElement(ui.panes, 'nav')
+        const foot = paneElement(ui.panes, 'foot')
+        const dump = {
+          v: PLUGIN_VERSION,
+          t: Date.now(),
+          url: String(window.location.href),
+          root: rect(ui.root),
+          contentH: contentBoxHeight(ui.root),
+          state,
+          status: document.documentElement.getAttribute('data-dsh-sw-state'),
+          fault: document.documentElement.getAttribute('data-dsh-sw-fault'),
+          rail: isRail(),
+          panes,
+          navChildren: nav ? Array.from(nav.children).slice(0, 12).map(describe) : [],
+          footChildren: foot ? Array.from(foot.children).slice(0, 8).map(describe) : []
+        }
+        window.localStorage.setItem(DUMP_KEY, JSON.stringify(dump))
+        document.documentElement.setAttribute('data-dsh-sw-dump', PLUGIN_VERSION)
+      } catch (error) { /* 诊断失败不影响功能 */ }
+    }
+
     function status(text) {
       try {
         document.documentElement.setAttribute('data-dsh-sw-state', text)
@@ -1865,6 +1936,7 @@ window.__ModuleLoader__.load({
     }
 
     function apply() {
+      markBoot()
       if (!listening) return
       writing = true
       try {

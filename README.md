@@ -95,6 +95,11 @@ https://raw.githubusercontent.com/nullifyi/dsh-sidebar-width/main/market/index.j
 
 ## 变更记录
 
+### v0.6.9
+- **主区下限从 64 提到 96**：64px 时工作区只剩一条被截断的会话行，看起来像“底部压住了上一行”；96px 至少能看出是列表。
+- **可确认宿主跑的是哪一版**：根节点写 `data-dsh-sw-version`，`localStorage['dsh-sidebar-sections:boot']` 记录 `{v,t}`；启动 2.5 秒后另写一份现场快照 `localStorage['dsh-sidebar-sections:dump']`（各块矩形、面板列表子节点、计算样式、状态串），排障时不用开 DevTools。
+- 夹具补了「版本号与 package.json 一致」「启动记录」「版本属性」三条断言（144 项）。
+
 ### v0.6.8
 - **底栏不再越出侧栏底部**：新增 `enforceBudget()`，用真实 `getBoundingClientRect()`（把块与块之间的外边距、`main` 自身高度一起算进去）判断是否溢出；溢出就按“当前最高的那个被拖过的块”逐轮压回，最多 6 轮。以前只按估算高度判断，存储里一个偏大的值就能把底栏顶到 root 外面，看起来就是“盖住上一层”。
 - **没被拖过的块不再被临时写高度**：v0.6.7 为了压回溢出，会给所有块写临时高度，副作用是插件行被压到看不见、重载后还残留。现在只有用户真正拖过的块参与压缩。
