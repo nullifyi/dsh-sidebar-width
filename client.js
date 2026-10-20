@@ -579,8 +579,16 @@ window.__ModuleLoader__.load({
 
     function signatureOf(pane, kids) {
       let text = 0
-      for (const kid of kids) text += (kid.textContent || '').length
-      return kids.length + '|' + Math.round(pane.clientWidth || 0) + '|' + text
+      let zooms = ''
+      for (const kid of kids) {
+        text += (kid.textContent || '').length
+        zooms += ',' + (kid.getAttribute(ATTR_ZOOM) || '')
+      }
+      // 行高覆盖会改变内容高度，但不改变子元素个数与文字 → 必须进签名，
+      // 否则拖过某一行之后 pane 的“自然高度”还是旧值，字号会突然被算小/算大。
+      let rowsSig = ''
+      for (const key of Object.keys(state.rows || {})) rowsSig += ',' + key + '=' + state.rows[key]
+      return kids.length + '|' + Math.round(pane.clientWidth || 0) + '|' + text + '|' + zooms + '|' + rowsSig
     }
 
     /** 内容自然高度 = 全部子元素清零 zoom 后 pane 的滚动高度。 */
@@ -694,13 +702,16 @@ window.__ModuleLoader__.load({
       if (!h) return 1
       const natural = naturalIn || naturalHeight(pane, kids)
       if (!natural) return 1
+      // 行高自己已经被用户调过的行不再吃 pane 级 zoom：它的 height 已经是最终值，
+      // 再乘一次 zoom 会变成“双重缩小”，滑块一动就忽大忽小。
+      const zoomable = (kid) => kid.getAttribute(ATTR_ROW) === null
       const ratio = h / natural
       if (ratio >= 0.995) {
         for (const kid of kids) setChildZoom(kid, 1)
         return 1
       }
       const z = Math.max(MIN_FIT, Math.round(ratio * 1000) / 1000)
-      for (const kid of kids) setChildZoom(kid, z)
+      for (const kid of kids) setChildZoom(kid, zoomable(kid) ? z : 1)
       return z
     }
 
@@ -794,7 +805,7 @@ window.__ModuleLoader__.load({
       const gutter = ensureGutter(root)
       ensureCollapseButtons(gutter)
       const wanted = []
-      const keys = paneKeys(panes)
+      const keys = paneKeys(panes).filter((key) => !paneHidden(key))
       ui.sashSpec = {}
       for (let i = 1; i < keys.length; i += 1) {
         const aboveKey = keys[i - 1]
@@ -802,7 +813,6 @@ window.__ModuleLoader__.load({
         const above = paneElement(panes, aboveKey)
         const below = paneElement(panes, belowKey)
         if (!above || !below) continue
-        if (paneHidden(aboveKey) || paneHidden(belowKey)) continue
         const id = sashIdFor(aboveKey)
         ui.sashSpec[id] = sashSpecFor(aboveKey, belowKey)
         wanted.push({ id, anchor: above, below })
@@ -882,10 +892,25 @@ window.__ModuleLoader__.load({
       // main|foot 这条分界反向：往上拖 = foot 变高。
       const inverted = spec ? spec.inverted : sashId === 'foot'
 
+      // 紧贴底部（foot）的那条缝：往下拖 = 上面那块变高（把底部推下去），
+      // 往上拖 = 底部那块变高。这样折叠掉中间的 main 之后，底部依然可调。
+      const dual = spec && spec.below === 'foot' && spec.above !== 'main' && target !== 'foot'
+        ? {
+            down: { target, inverted: false, h0: heights[target] || 18, natural: native },
+            up: {
+              target: 'foot',
+              inverted: true,
+              h0: heights.foot || MIN_PANE.foot || 22,
+              natural: paneElement(panes, 'foot') ? unconstrainedHeight(paneElement(panes, 'foot')) : heights.foot || 22,
+            },
+          }
+        : null
+
       drag = {
         sashId,
         target,
         inverted,
+        dual,
         y0: event.clientY,
         h0: heights[target] || MIN_PANE[target] || 18,
         natural: native,
@@ -901,6 +926,21 @@ window.__ModuleLoader__.load({
       window.addEventListener('pointercancel', onDragEnd, true)
     }
 
+    /** 某块能长到多高：内容高度 − 主区下限 − 其它固定块。 */
+    function contentHMax(target) {
+      const panes = ui.panes
+      const contentH = ui.root ? contentBoxHeight(ui.root) : 0
+      let others = 0
+      for (const key of paneKeys(panes)) {
+        if (key === 'main' || key === target) continue
+        if (paneHidden(key)) continue
+        const el = paneElement(panes, key)
+        const saved = savedHeight(key)
+        others += saved !== null ? saved : el ? Math.max(MIN_PANE[key] || 18, unconstrainedHeight(el)) : 0
+      }
+      return Math.max(MIN_PANE[target] || 22, contentH - MIN_MAIN - others)
+    }
+
     function onDragMove(event) {
       if (!drag || !listening) return
       event.preventDefault()
@@ -910,6 +950,18 @@ window.__ModuleLoader__.load({
         drag.started = true
         event.preventDefault()
         event.stopPropagation()
+      }
+      if (drag.dual && drag.target === drag.dual.down.target) {
+        // 还没定方向：超过 3px 后按方向选“上面那块”还是“下面那块”。
+        if (Math.abs(dy) < 3) return
+        const pick = dy < 0 ? drag.dual.up : drag.dual.down
+        drag.target = pick.target
+        drag.inverted = pick.inverted
+        drag.h0 = pick.h0
+        drag.natural = pick.natural
+        drag.max = Math.max(pick.h0, contentHMax(pick.target))
+        drag.min = MIN_PANE[pick.target] || 18
+        drag.h = pick.h0
       }
       const raw = drag.h0 + (drag.inverted ? -dy : dy)
       const h = Math.round(Math.min(drag.max, Math.max(drag.min, raw)))
