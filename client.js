@@ -79,6 +79,11 @@ window.__ModuleLoader__.load({
     const MIN_FIT = 0.42
     /** 单行最低高度：再低就点不到这一行里的东西了。 */
     const MIN_ROW = 18
+    /** 账号/头像行的独立键与最低高度：它是单独一个可调单元，不跟上一块联动。 */
+    const ACCOUNT_KEY = 'acct:0'
+    const MIN_ACCOUNT = 26
+    /** 任何一块/一行都不能把内容顶出侧栏：超出就按“谁最高先压谁”回收。 */
+    const TRIM_ROUNDS = 8
 
     const FIXED_PANES = ['brand', 'new', 'nav', 'foot']
     const PANE_LABEL = { brand: '品牌行', new: '新会话', nav: '全局面板', main: '工作区与会话', foot: '账号与用量' }
@@ -87,6 +92,7 @@ window.__ModuleLoader__.load({
     function rowLabel(key) {
       const parts = String(key).split(':')
       const index = Number(parts[1]) + 1
+      if (parts[0] === 'acct') return '账号与头像'
       if (parts[0] === 'nav') return '面板第' + index + '行'
       if (parts[0] === 'foot') return '底部分组第' + index + '块'
       return '底部第' + index + '行'
@@ -497,6 +503,21 @@ window.__ModuleLoader__.load({
             overflow -= take
           }
         }
+      }
+
+      // 被“空间不够”压过的值要写回存储，否则每次 apply 都会从原始大值重新算一遍，
+      // 布局永远在“撑开—压缩”之间来回抖，底栏就会压到上一层。
+      const clamped = { ...state.heights }
+      let changed = false
+      for (const id of fixed) {
+        const saved = savedHeight(id)
+        if (saved === null) continue
+        const h = heights[id]
+        if (typeof h === 'number' && h < saved) { clamped[id] = h; changed = true }
+      }
+      if (changed) {
+        state = { ...state, heights: clamped }
+        if (!drag) persist()
       }
 
       for (const id of fixed) {
@@ -1027,7 +1048,7 @@ window.__ModuleLoader__.load({
 
     function rowSaved(key) {
       const value = rowOverrides()[key]
-      return typeof value === 'number' && Number.isFinite(value) ? Math.max(MIN_ROW, Math.round(value)) : null
+      return typeof value === 'number' && Number.isFinite(value) ? Math.max(rowMin(key), Math.round(value)) : null
     }
 
     /** 这一行的原生高度：第一次见到（还没被我们改过）时量一次并记住。 */
@@ -1077,13 +1098,23 @@ window.__ModuleLoader__.load({
           if (child.children && child.children.length >= 2) push(id, child)
         }
       }
+      // 头像行是单独一个可调单元：不跟上一块联动，也不能被压到看不见。
+      if (accountEl && accountEl.parentNode) {
+        scopes.push({ id: 'acct', container: accountEl.parentNode, rows: [accountEl], single: true })
+      }
       return scopes
     }
 
     function scopeVisible(scope) {
       if (scope.id === 'nav') return !isPaneHidden('nav')
+      if (scope.id === 'acct') return !isPaneHidden('foot')
       if (scope.id === 'foot' || scope.id.indexOf('foot') === 0) return !isPaneHidden('foot')
       return true
+    }
+
+    /** 某一行的最低高度；账号行比普通行高一档。 */
+    function rowMin(key) {
+      return key === ACCOUNT_KEY ? MIN_ACCOUNT : MIN_ROW
     }
 
     function applyRowSizing(panes) {
@@ -1109,9 +1140,81 @@ window.__ModuleLoader__.load({
           writeStyle(row, 'height', saved + 'px', 'important')
           writeStyle(row, 'overflow', 'hidden', 'important')
           row.setAttribute(ATTR_ROW, key)
-          applyFit(row, Math.max(0, saved), rowNatural(row))
+          // 账号行只改高度，绝不缩里面的字号和头像。
+          if (key !== ACCOUNT_KEY) applyFit(row, Math.max(0, saved), rowNatural(row))
+          else clearFit(row)
         }
       }
+    }
+
+    /** key → 元素（与 rowSeams 用同一套 scope，保证拖的是同一行）。 */
+    function rowElementsByKey(panes) {
+      const map = new Map()
+      for (const scope of rowScopes(panes)) {
+        if (!scopeVisible(scope)) continue
+        for (let i = 0; i < scope.rows.length; i += 1) map.set(scope.id + ':' + i, scope.rows[i])
+      }
+      return map
+    }
+
+    /** root 里的内容总高：scrollHeight 拿不到（jsdom/部分宿主）就用子元素高度累加。 */
+    function contentOverflow(root) {
+      const contentH = contentBoxHeight(root)
+      if (!contentH) return 0
+      let sum = 0
+      for (const child of root.children) {
+        if (ownNode(child)) continue
+        sum += Math.round(child.getBoundingClientRect().height || 0)
+      }
+      const scrolled = Math.round(root.scrollHeight || 0)
+      const total = Math.max(scrolled, sum)
+      return Math.round(total - contentH)
+    }
+
+    /**
+     * 收尾保护：任何块/行都不许把内容顶出侧栏（顶出后就会盖住上面那一层）。
+     * 量一次 root 的溢出量，再从“最高且还能继续压”的单元开始回收。
+     */
+    function enforceBudget(panes, root) {
+      const contentH = contentBoxHeight(root)
+      if (!contentH) return 0
+      let overflow = contentOverflow(root)
+      if (overflow <= 2) return 0
+      const rows = rowElementsByKey(panes)
+      const heights = { ...state.heights }
+      const rowNext = { ...rowOverrides() }
+      let trimmed = 0
+      for (let round = 0; round < TRIM_ROUNDS && overflow > 2; round += 1) {
+        let pick = null
+        for (const key of paneKeys(panes)) {
+          if (key === 'main' || isPaneHidden(key)) continue
+          const saved = savedHeight(key)
+          if (saved === null) continue
+          const min = MIN_PANE[key] || MIN_ROW
+          if (saved - min <= 0) continue
+          if (!pick || saved > pick.h) pick = { kind: 'pane', key, h: saved, min }
+        }
+        for (const key of rows.keys()) {
+          const saved = rowNext[key]
+          if (typeof saved !== 'number') continue
+          const min = rowMin(key)
+          if (saved - min <= 0) continue
+          if (!pick || saved > pick.h) pick = { kind: 'row', key, h: saved, min }
+        }
+        if (!pick) break
+        const cut = Math.min(overflow, pick.h - pick.min)
+        if (cut <= 0) break
+        if (pick.kind === 'pane') heights[pick.key] = pick.h - cut
+        else rowNext[pick.key] = pick.h - cut
+        overflow -= cut
+        trimmed += cut
+      }
+      if (!trimmed) return 0
+      state = { ...state, heights, rows: rowNext }
+      if (!drag) persist()
+      applyPaneSizing(panes, root)
+      applyRowSizing(panes)
+      return trimmed
     }
 
     /**
@@ -1121,7 +1224,8 @@ window.__ModuleLoader__.load({
     function applyAccountPin() {
       const row = accountEl
       if (!row) return false
-      if (row.getAttribute(ATTR_ROW) !== null) {
+      const own = rowSaved(ACCOUNT_KEY) !== null
+      if (!own && row.getAttribute(ATTR_ROW) !== null) {
         dropStyle(row, 'height')
         dropStyle(row, 'flex-basis')
         dropStyle(row, 'overflow')
@@ -1180,6 +1284,21 @@ window.__ModuleLoader__.load({
         if (!scopeVisible(scope)) continue
         const containerRect = scope.container.getBoundingClientRect()
         if (!containerRect.height) continue
+        if (scope.single) {
+          // 单行 scope（账号行）：缝落在这一行的“上沿”，往上拖就是压这一行。
+          const rect = scope.rows[0].getBoundingClientRect()
+          if (rect && rect.height >= 1) {
+            out.push({
+              key: scope.id + ':' + 0,
+              row: scope.rows[0],
+              y: rect.top,
+              x0: containerRect.left,
+              x1: containerRect.right,
+              edge: 'top',
+            })
+          }
+          continue
+        }
         for (let i = 0; i < scope.rows.length - 1; i += 1) {
           const rect = scope.rows[i].getBoundingClientRect()
           if (!rect || rect.height < 1) continue
@@ -1207,6 +1326,7 @@ window.__ModuleLoader__.load({
     }
 
     function rowLabelOf(seam) {
+      if (String(seam.key).indexOf('acct:') === 0) return '账号与头像'
       const row = seam.row
       let text = ''
       try {
@@ -1284,7 +1404,7 @@ window.__ModuleLoader__.load({
         y0: event.clientY,
         h0,
         natural,
-        min: MIN_ROW,
+        min: rowMin(seam.key),
         max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural)),
         h: h0,
         started: false,
@@ -1491,11 +1611,35 @@ window.__ModuleLoader__.load({
      * 头像所在的那一行（`settingsArea > 账号行 > avatar` 里的“账号行”）。
      * 这一行不参与任何缩放：它永远保持原生大小、被钉在侧栏最底部。
      */
+    /**
+     * 头像行兜底：真实宿主里头像可能是背景图 / 伪元素，认不出 <img> 时就按结构取
+     * “底部最后一行”。这样独立调高与图标坞锚定都不依赖头像元素能否被识别。
+     */
+    function guessAccountRow(panes) {
+      if (!panes || !panes.foot) return null
+      let node = panes.foot
+      let last = null
+      for (let depth = 0; depth < 4; depth += 1) {
+        const kids = []
+        for (const child of node.children) {
+          if (ownNode(child)) continue
+          const rect = child.getBoundingClientRect()
+          if (rect.height > 1) kids.push(child)
+        }
+        if (!kids.length) break
+        const candidate = kids[kids.length - 1]
+        if (candidate.getBoundingClientRect().height <= 96) { last = candidate; break }
+        last = candidate
+        node = candidate
+      }
+      return last
+    }
+
     function accountRow(panes) {
       if (!panes || !panes.foot) return null
       const root = panes.foot
       const avatar = avatarNode(root)
-      if (!avatar) return null
+      if (!avatar) return guessAccountRow(panes)
       const containers = [root]
       for (const child of root.children) if (!ownNode(child)) containers.push(child)
       let node = avatar
@@ -1504,7 +1648,7 @@ window.__ModuleLoader__.load({
         if (containers.indexOf(parent) >= 0) return node
         node = parent
       }
-      return null
+      return guessAccountRow(panes)
     }
 
     function avatarTop(root) {
@@ -1530,8 +1674,15 @@ window.__ModuleLoader__.load({
 
     function positionDock(root, dock) {
       const rootRect = root.getBoundingClientRect()
-      const top = avatarTop(root)
-      const bottom = top === null ? 14 : Math.round(rootRect.bottom - top + 8)
+      // 优先按“账号/头像那一行”的顶边锚定：图标坞永远在它上方，不会盖住它，
+      // 也不依赖头像元素能否被识别（真实宿主里头像可能是背景图而非 <img>）。
+      let anchor = null
+      if (accountEl && root.contains(accountEl)) {
+        const rect = accountEl.getBoundingClientRect()
+        if (rect && rect.height >= 1) anchor = rect.top
+      }
+      if (anchor === null) anchor = avatarTop(root)
+      const bottom = anchor === null ? 14 : Math.round(rootRect.bottom - anchor + 8)
       writeStyle(dock, 'bottom', Math.max(10, bottom) + 'px')
     }
 
@@ -1716,13 +1867,22 @@ window.__ModuleLoader__.load({
         renderSashes(root, panes)
         applyRowSizing(panes)
         applyAccountPin()
+        const trimmed = enforceBudget(panes, root)
+        if (trimmed) applyAccountPin()
         sweepRowNodes()
+
+        // 只要有任何一块/一行被调过尺寸，就把侧栏裁到自己的盒子里：
+        // 内容再长也只能在内部滚动，绝不会画到上面那一层上。
+        const active = Object.keys(state.heights).length > 0 || Object.keys(rowOverrides()).length > 0
+        if (active) writeStyle(root, 'overflow', 'clip', 'important')
+        else dropStyle(root, 'overflow')
+
         renderDock(panes, root, dock)
         applyCollapseButtons(panes, root)
 
         const h = []
         for (const id of fixedKeys) if (savedHeight(id) !== null) h.push(id + '=' + savedHeight(id))
-        status('panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' hidden:' + state.hidden.length)
+        status('panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' trim:' + trimmed + ' hidden:' + state.hidden.length)
       } catch (error) {
         fault(error && error.message ? error.message : String(error))
       }
