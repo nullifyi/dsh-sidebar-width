@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.14'
+    const PLUGIN_VERSION = '0.6.15'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -76,6 +76,9 @@ window.__ModuleLoader__.load({
     const ATTR_DRAGGING = 'data-dsh-sw-dragging'
     const ATTR_ROWSPACE = 'data-dsh-sw-rowspace'
     const ATTR_FONT = 'data-dsh-sw-font'
+    const ATTR_ICONROW = 'data-dsh-sw-iconrow'
+    const DUMP2_KEY = 'dsh-sidebar-sections:footdump'
+    const ICON_ROW_H = 26
 
     /** 每块最低高度：再低就点不到里面的按键了。 */
     const MIN_PANE = { brand: 22, new: 22, nav: 36, foot: 48 }
@@ -1226,7 +1229,11 @@ window.__ModuleLoader__.load({
           if (child === accountEl) continue // 头像行不参与缩放，也不给它的缝
           rows.push(child)
         }
-        if (rows.length >= 2) scopes.push({ id, container, rows })
+        // 只有一行也要给缝（用户要求“横线上的都得能调整高度”）；但横向排列的容器不算行。
+        if (!rows.length) return
+        const flow = window.getComputedStyle(container)
+        if (flow && (flow.flexDirection === 'row' || flow.flexDirection === 'row-reverse')) return
+        scopes.push({ id, container, rows })
       }
       if (panes.nav) push('nav', panes.nav)
       if (panes.foot) {
@@ -1258,6 +1265,35 @@ window.__ModuleLoader__.load({
       return key === ACCOUNT_KEY ? MIN_ACCOUNT : MIN_ROW
     }
 
+    /** 只放图标、没有文字的按钮行：默认压紧（用户说“小部件不占这么大空间”）。 */
+    function isIconOnly(row) {
+      if (!row) return false
+      if (String(row.textContent || '').trim()) return false
+      return !!row.querySelector('svg, img, [class*="icon" i]')
+    }
+
+    function compactIconRow(row) {
+      if (!isIconOnly(row)) {
+        if (row.getAttribute(ATTR_ICONROW) !== null) {
+          dropStyle(row, 'height')
+          dropStyle(row, 'min-height')
+          dropStyle(row, 'padding-top')
+          dropStyle(row, 'padding-bottom')
+          row.removeAttribute(ATTR_ICONROW)
+        }
+        return false
+      }
+      const rect = row.getBoundingClientRect()
+      const h = Math.round((rect && rect.height) || 0)
+      if (h && h <= ICON_ROW_H + 6) return false
+      writeStyle(row, 'height', ICON_ROW_H + 'px', 'important')
+      writeStyle(row, 'min-height', '0', 'important')
+      writeStyle(row, 'padding-top', '2px', 'important')
+      writeStyle(row, 'padding-bottom', '2px', 'important')
+      row.setAttribute(ATTR_ICONROW, '1')
+      return true
+    }
+
     function applyRowSizing(panes) {
       for (const scope of rowScopes(panes)) {
         if (!scopeVisible(scope)) continue
@@ -1273,6 +1309,8 @@ window.__ModuleLoader__.load({
             dropStyle(row, 'overflow')
             if (row.getAttribute(ATTR_ROW) !== null) row.removeAttribute(ATTR_ROW)
             clearFit(row)
+            // 只有图标的行不用占一整行的高度，默认压到 ICON_ROW_H；还能拖高。
+            compactIconRow(row)
             continue
           }
           writeStyle(row, 'flex-grow', '0', 'important')
@@ -1329,7 +1367,27 @@ window.__ModuleLoader__.load({
         writeStyle(child, 'flex-grow', '0', 'important')
         writeStyle(child, 'flex-shrink', '0', 'important')
       }
-      dropStyle(row, 'margin-top')
+      // 底栏有自定义高度时，把头像行用 auto 外边距顶到它自己那一块的底部：
+      // 上面几行再怎么压，头像和它下面的部分都不跟着动（用户要的“互不干扰”）。
+      // 找“能把它顶到底部”的那一层：从头像往上看，第一个不是末位子元素的祖先，
+      // 给它 auto 外边距，头像（和它后面的内容）就固定在底栏自己这一块的底部。
+      let pinned = row
+      let node = row
+      while (node && node.parentElement && node.parentElement !== footEl) {
+        const parent = node.parentElement
+        const siblings = Array.from(parent.children).filter((child) => !ownNode(child))
+        if (siblings.length && siblings[siblings.length - 1] !== node) { pinned = node; break }
+        node = parent
+      }
+      for (const child of kids) {
+        if (child !== pinned) dropStyle(child, 'margin-top')
+      }
+      const targets = [row, pinned]
+      for (const el of targets) {
+        if (el !== pinned) dropStyle(el, 'margin-top')
+      }
+      if (savedHeight('foot') !== null) writeStyle(pinned, 'margin-top', 'auto', 'important')
+      else dropStyle(pinned, 'margin-top')
       return kids.length > 0
     }
 
@@ -1982,7 +2040,34 @@ window.__ModuleLoader__.load({
           rootChildren: Array.from(ui.root.children).filter((el) => !ownNode(el)).slice(0, 14).map(describe),
           footChildren: foot ? Array.from(foot.children).slice(0, 8).map(describe) : []
         }
+        dump.scopes = rowScopes(ui.panes).map((scope) => ({
+          id: scope.id,
+          rows: scope.rows.map((r) => {
+            const cs = window.getComputedStyle(r)
+            return { text: String(r.textContent || '').trim().slice(0, 24), rect: rect(r), h: cs.height, mt: cs.marginTop, icon: isIconOnly(r) }
+          })
+        }))
+        dump.sashCount = (ui.sashes ? Object.keys(ui.sashes).length : 0)
         window.localStorage.setItem(DUMP_KEY, JSON.stringify(dump))
+        const footEl2 = paneElement(ui.panes, 'foot')
+        const footDump = {
+          v: PLUGIN_VERSION,
+          t: Date.now(),
+          foot: footEl2 ? rect(footEl2) : null,
+          footSaved: savedHeight('foot'),
+          rows: state.rows,
+          heights: state.heights,
+          scopes: dump.scopes.filter((scope) => scope.id.indexOf('foot') === 0 || scope.id === 'acct'),
+          account: dump.account,
+          pin: (() => {
+            const first = footEl2 ? Array.from(footEl2.children).filter((child) => !ownNode(child)) : []
+            return first.map((el) => {
+              const cs = window.getComputedStyle(el)
+              return { cls: String(el.className || '').slice(0, 40), h: cs.height, mt: cs.marginTop, kids: el.children.length }
+            })
+          })()
+        }
+        window.localStorage.setItem(DUMP2_KEY, JSON.stringify(footDump))
         document.documentElement.setAttribute('data-dsh-sw-dump', PLUGIN_VERSION)
       } catch (error) { /* 诊断失败不影响功能 */ }
     }
@@ -2056,7 +2141,8 @@ window.__ModuleLoader__.load({
         let shape = 0
         for (const id of paneKeys(panes)) {
           const el = paneElement(panes, id)
-          shape = shape * 131 + (el ? el.children.length + 1 : 0)
+          // 用整棵子树节点数：容器里增删一行也要触发重画，否则新行拿不到缝。
+          shape = shape * 131 + (el ? el.querySelectorAll('*').length + 1 : 0)
         }
         const sig = [
           paneKeys(panes).join(','),
