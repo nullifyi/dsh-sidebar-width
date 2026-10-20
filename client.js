@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.17'
+    const PLUGIN_VERSION = '0.6.18'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -1375,6 +1375,8 @@ window.__ModuleLoader__.load({
       if (row.getAttribute(ATTR_FONT) !== null) row.removeAttribute(ATTR_FONT)
       writeStyle(row, 'flex-grow', '0', 'important')
       writeStyle(row, 'flex-shrink', '0', 'important')
+      // 一条细分隔线：让账号行和上面那几块在视觉上明显分开。
+      writeStyle(row, 'border-top', '1px solid var(--dsw-alias-border-l2, rgba(15, 23, 42, 0.10))', 'important')
       // 不再把底部内容“压”到视口最下面：用户明确要的是头像跟着内容走，
       // 不是被钉在窗口底部（钉底会让它和上一块之间空出一大片，还会把用量卡顶出盒子）。
       const footEl = ui.panes ? paneElement(ui.panes, 'foot') : null
@@ -1432,12 +1434,13 @@ window.__ModuleLoader__.load({
       return Math.max(natural, boxH - others - 2)
     }
 
-    function rowGrowthLimit(panes, root, natural) {
+    function rowGrowthLimit(panes, root, natural, cur) {
+      const base = Math.max(natural, Math.round(cur || 0))
       const contentH = root ? contentBoxHeight(root) : 0
       const mainEl = paneElement(panes, 'main')
       if (mainEl && !isPaneHidden('main')) {
         const rect = mainEl.getBoundingClientRect()
-        return Math.max(natural, natural + Math.max(0, Math.round(rect.height) - MIN_MAIN))
+        return Math.max(base, base + Math.max(0, Math.round(rect.height) - MIN_MAIN))
       }
       const fixed = FIXED_PANES.reduce((sum, id) => {
         const el = paneElement(panes, id)
@@ -1472,15 +1475,17 @@ window.__ModuleLoader__.load({
           x1: containerRect.height ? containerRect.right : rect.right,
         })
         if (scope.single) {
-          // 单行 scope（账号行）：缝落在这一行的“上沿”，往上拖就是压这一行。
+          // 单行 scope（账号行）：缝落在这一行的“下沿”。
+          // 放上沿会和“底部块 | 账号行”那条分界缝重合，两条缝抢同一个点，
+          // 命中就有一半概率落到另一条上（用户报的“80% 拖不动”）。
           const rect = scope.rows[0].getBoundingClientRect()
-          if (rect && rect.height >= 1) {
+          if (rect && rect.height >= 2) {
             out.push({
               key: scope.id + ':' + 0,
               row: scope.rows[0],
-              y: rect.top,
+              y: rect.bottom - 1,
               ...span(rect),
-              edge: 'top',
+              edge: 'bottom',
             })
           }
           continue
@@ -1496,7 +1501,12 @@ window.__ModuleLoader__.load({
           })
         }
       }
-      return out
+      const kept = []
+      for (const seam of out) {
+        if (kept.some((other) => Math.abs(other.y - seam.y) <= 2)) continue
+        kept.push(seam)
+      }
+      return kept
     }
 
     function rowSeamAt(clientY, clientX) {
@@ -1594,7 +1604,7 @@ window.__ModuleLoader__.load({
         h0,
         natural,
         min: rowMin(seam.key),
-        max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural), rowBoxLimit(ui.panes, row, natural)),
+        max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural, h0), rowBoxLimit(ui.panes, row, natural)),
         h: h0,
         started: false,
         moved: false,
