@@ -38,7 +38,9 @@
     "index.js",
     "client.js",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "market/"
   ],
   "engines": {
     "node": ">=18"

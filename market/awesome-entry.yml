@@ -1,0 +1,6 @@
+url: https://github.com/nullifyi/dsh-sidebar-width
+name: nullifyi/dsh-sidebar-width
+category: ui
+description:
+  en: Adds VSCode-style sash dividers to the sidebar, so pane and row boundaries can be dragged, squeezed content scales down instead of clipping, and blocks collapse into icons above the avatar.
+  zh: 给侧栏加上 VS Code 式分割条，拖动区块与每一行的边界即可调高；空间被压小时内容按比例缩小而不是裁切，区块还能折叠成头像上方的图标。
