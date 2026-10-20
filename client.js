@@ -51,11 +51,12 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.11'
+    const PLUGIN_VERSION = '0.6.12'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
-    const STORE_KEY = 'dsh-sidebar-sections:v4'
+    const STORE_KEY = 'dsh-sidebar-sections:v5'
     const LEGACY_KEY = 'dsh-sidebar-sections:v2'
+    const LEGACY_V4 = 'dsh-sidebar-sections:v4'
     // v3 的行高是 0.6.1 早期版本在真实宿主里写坏的（行被压到十几像素、字号缩到底），旧值一律不继承。
     const LEGACY_V3 = 'dsh-sidebar-sections:v3'
     const CSS_ID = 'dsh-sidebar-sections-css'
@@ -235,14 +236,22 @@ window.__ModuleLoader__.load({
         if (!raw) {
           // 老版本（v2，逐行 zoom）直接丢弃：模型换了，旧数值没有可比性。
           try { window.localStorage.removeItem(LEGACY_KEY) } catch (error) { /* 隐私模式 */ }
-          // v3 → v4：只继承“块高度 + 折叠状态”，行高不继承（旧版本写坏过）。
-          const stale = window.localStorage.getItem(LEGACY_V3)
-          if (stale) {
+          // v4 → v5：v4 里存的是“绝对像素高度”，而且被旧版的预算/缩放写坏过
+          // （例如 nav=89 却要装 3 行 36px 的面板行，底栏 207 却装不下头像行）。
+          // 绝对高度只对当时的排版有效，换到现在的排版必然错位，
+          // 所以只继承“重启后模式”和“折叠状态”，高度回到原生。
+          const stale4 = window.localStorage.getItem(LEGACY_V4)
+          if (stale4) {
             try {
-              const old = JSON.parse(stale)
-              const migrated = { heights: old.heights || {}, rows: {}, hidden: old.hidden || [] }
+              const old = JSON.parse(stale4)
+              const migrated = {
+                mode: old && old.mode === 'reset' ? 'reset' : 'keep',
+                heights: {},
+                rows: {},
+                hidden: Array.isArray(old && old.hidden) ? old.hidden : [],
+              }
               window.localStorage.setItem(STORE_KEY, JSON.stringify(migrated))
-              window.localStorage.removeItem(LEGACY_V3)
+              window.localStorage.removeItem(LEGACY_V4)
               raw = window.localStorage.getItem(STORE_KEY)
             } catch (error) { raw = null }
           }
@@ -564,9 +573,19 @@ window.__ModuleLoader__.load({
         }
         const over = used - contentH
         if (over <= 0 || !dyn.length) break
+        // 回收顺序：面板区 → 新会话 → 品牌行 → 底栏。
+        // 底栏放最后，因为头像和用量卡一旦被裁就“看不见了”；
+        // 面板区可以滚动，压小它只是少露几行。
+        const priority = ['nav', 'new', 'brand', 'foot']
+        const rank = (id) => {
+          const at = priority.indexOf(id)
+          return at < 0 ? priority.length : at
+        }
         let picked = null
         for (const id of dyn) {
-          if (!picked || savedHeight(id) > savedHeight(picked)) picked = id
+          if (!picked) { picked = id; continue }
+          const byRank = rank(id) - rank(picked)
+          if (byRank < 0 || (byRank === 0 && savedHeight(id) > savedHeight(picked))) picked = id
         }
         if (!picked) break
         const cur = savedHeight(picked)
@@ -608,13 +627,18 @@ window.__ModuleLoader__.load({
           dropStyle(el, 'flex-basis')
           dropStyle(el, 'height')
           dropStyle(el, 'overflow')
+          dropStyle(el, 'overflow-y')
           el.removeAttribute(ATTR_PANE)
         } else {
+          const need = Math.max(0, Math.round(el.scrollHeight || 0))
           writeStyle(el, 'flex-grow', '0', 'important')
           writeStyle(el, 'flex-shrink', '0', 'important')
           writeStyle(el, 'flex-basis', h + 'px', 'important')
           writeStyle(el, 'height', h + 'px', 'important')
           writeStyle(el, 'overflow', 'hidden', 'important')
+          // 内容比盒子高时（例如面板区被拖得装不下 3 行），让它自己滚动，
+          // 而不是让第三行画到下面的工作区上。
+          writeStyle(el, 'overflow-y', need > h && id === 'nav' ? 'auto' : 'hidden', 'important')
           el.setAttribute(ATTR_PANE, id)
         }
       }
@@ -2036,6 +2060,9 @@ window.__ModuleLoader__.load({
           if (!el) continue
           if (isPaneHidden(id)) { clearFit(el); continue }
           if (savedHeight(id) === null) { clearFit(el); continue }
+          // 面板区里的“行”由行级逻辑负责：块级再缩放会把某些行缩、某些行不缩
+          // （用户看到的“有的大字有的小字”），而且会让行高和容器对不上。
+          if (id === 'nav') { clearFit(el); continue }
           const z = fitPane(el, sizing.heights[id])
           if (z < 1) fitted += 1
         }
