@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.13'
+    const PLUGIN_VERSION = '0.6.14'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -608,12 +608,25 @@ window.__ModuleLoader__.load({
         const rect = el.getBoundingClientRect()
         const min = MIN_PANE[id] || 18
         const measured = Math.max(min, Math.round(rect.height || 0))
-        heights[id] = saved === null ? measured : Math.max(min, saved)
+        const floor = paneFloor[id] || 0
+        heights[id] = saved === null ? measured : Math.max(min, saved, floor)
       }
 
       // 注意：这里的压缩**只用于本次渲染**，绝不写回存储。
       // 曾经把压缩结果 persist 回去，结果 persist → 订阅 → apply → 再压缩，
       // 布局在“撑开—压缩”之间来回跳（用户看到的就是整条侧栏闪烁、块忽大忽小）。
+
+      // 底栏不允许比自己的内容还矮：行数不变时被拖小只是裁掉，
+      // 但只要放得下，就应该撑到内容高度，否则头像行会被裁到盒子外面（“往下拖就看不见”）。
+      const othersFixed = fixed.reduce((sum, key) => (key === 'foot' ? sum : sum + (heights[key] || 0)), 0)
+      const footEl = paneElement(panes, 'foot')
+      if (footEl && savedHeight('foot') !== null) {
+        const need = Math.max(0, Math.round(footEl.scrollHeight || 0))
+        if (need > heights.foot) {
+          const capAll = Math.max(heights.foot, contentH - MIN_MAIN - othersFixed)
+          heights.foot = Math.min(need, capAll)
+        }
+      }
 
       for (const id of fixed) {
         const el = paneElement(panes, id)
@@ -638,7 +651,7 @@ window.__ModuleLoader__.load({
           writeStyle(el, 'overflow', 'hidden', 'important')
           // 内容比盒子高时（例如面板区被拖得装不下 3 行），让它自己滚动，
           // 而不是让第三行画到下面的工作区上。
-          writeStyle(el, 'overflow-y', need > h && id === 'nav' ? 'auto' : 'hidden', 'important')
+          writeStyle(el, 'overflow-y', need > h && (id === 'nav' || id === 'foot') ? 'auto' : 'hidden', 'important')
           el.setAttribute(ATTR_PANE, id)
         }
       }
@@ -1321,6 +1334,29 @@ window.__ModuleLoader__.load({
     }
 
     /** 这一行还能长多高：把主区（工作区与会话）压到 MIN_MAIN 为止，余量都给它。 */
+    /**
+     * 行能被拖到多高：不能超过它所在容器当前还能放下的空间。
+     * 以前只按“主区余量”算，头像行能被拖到容器外，被 overflow 裁掉就再也看不见了。
+     */
+    function rowBoxLimit(panes, row, natural) {
+      let box = row ? row.parentElement : null
+      let paneEl = null
+      while (box) {
+        if (box.hasAttribute(ATTR_PANE)) { paneEl = box; break }
+        box = box.parentElement
+      }
+      if (!paneEl) return natural
+      const rect = paneEl.getBoundingClientRect()
+      const boxH = Math.round((rect && rect.height) || 0)
+      if (!boxH) return natural
+      const others = Array.from(paneEl.querySelectorAll('[' + ATTR_ROW + ']')).reduce((sum, other) => {
+        if (other === row) return sum
+        const otherRect = other.getBoundingClientRect()
+        return sum + Math.round((otherRect && otherRect.height) || 0)
+      }, 0)
+      return Math.max(natural, boxH - others - 2)
+    }
+
     function rowGrowthLimit(panes, root, natural) {
       const contentH = root ? contentBoxHeight(root) : 0
       const mainEl = paneElement(panes, 'main')
@@ -1476,7 +1512,7 @@ window.__ModuleLoader__.load({
         h0,
         natural,
         min: rowMin(seam.key),
-        max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural)),
+        max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural), rowBoxLimit(ui.panes, row, natural)),
         h: h0,
         started: false,
         moved: false,
@@ -1965,6 +2001,7 @@ window.__ModuleLoader__.load({
     // 会在我们写完之后再回调一次，没有这个闸门就会变成“写 → 观察 → 再写”的死循环。
     let lastSig = ''
     let lastStatus = ''
+    let paneFloor = {}
     let dumpTimer = 0
     let dumpedOnce = false
     // 我们自己写 DOM 时置真：MutationObserver/ResizeObserver 的读回调据此跳过，
@@ -2034,6 +2071,7 @@ window.__ModuleLoader__.load({
         if (sig === lastSig) { if (lastStatus) status(lastStatus); return }
         lastSig = sig
 
+        paneFloor = {}
         markBlocks(panes)
         accountEl = accountRow(panes)
         applyCollapse(panes)
@@ -2070,8 +2108,19 @@ window.__ModuleLoader__.load({
         // 只要有任何一块/一行被调过尺寸，就把侧栏裁到自己的盒子里：
         // 内容再长也只能在内部滚动，绝不会画到上面那一层上。
         const active = Object.keys(state.heights).length > 0 || Object.keys(rowOverrides()).length > 0
-        if (active) writeStyle(root, 'overflow', 'clip', 'important')
-        else dropStyle(root, 'overflow')
+        if (active) {
+          writeStyle(root, 'overflow', 'clip', 'important')
+          writeStyle(root, 'overflow-x', 'hidden', 'important')
+          // 内容真的装不下时（行被拖高、外面又没空间让主子区让出来），
+          // 给侧栏加纵向滚动条——用户明确要求“遮挡时能滚轮上下滑动看到”，
+          // 而不是让底部头像永远待在被裁掉的位置。
+          const overflows = Math.round(root.scrollHeight || 0) - Math.round(root.getBoundingClientRect().height || 0) > 1
+          writeStyle(root, 'overflow-y', overflows ? 'auto' : 'hidden', 'important')
+        } else {
+          dropStyle(root, 'overflow')
+          dropStyle(root, 'overflow-x')
+          dropStyle(root, 'overflow-y')
+        }
 
         renderDock(panes, root, dock)
         applyCollapseButtons(panes, root)
