@@ -102,7 +102,7 @@
           "source": {
             "type": "git",
             "url": "https://github.com/nullifyi/dsh-sidebar-width",
-            "commit": "PENDING"
+            "commit": "9caf96be4e88a11203d4431fdf30b998d5d8e911"
           }
         },
         {
