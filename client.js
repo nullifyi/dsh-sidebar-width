@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.15'
+    const PLUGIN_VERSION = '0.6.16'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -1433,7 +1433,7 @@ window.__ModuleLoader__.load({
     /* 行级拖拽不走任何覆盖元素：命中在 root 上用坐标算，既不会挡点击，
        也不会出现“多个横线”的残留。 */
 
-    const SEAM_REACH = 4
+    const SEAM_REACH = 6
 
     /** 当前可拖的行缝列表（client 坐标）；每条缝管它上面那一行。 */
     function rowSeams() {
@@ -1527,7 +1527,11 @@ window.__ModuleLoader__.load({
       writeStyle(hint, 'top', Math.round(seam.y - rootRect.top) + 'px')
       writeStyle(hint, 'display', 'block')
       const label = hint.querySelector('[' + ATTR_ROW_LABEL + ']')
-      if (label) writeText(label, 'textContent', '↑ 压缩 · ' + rowLabelOf(seam))
+      if (label) {
+        const rowRect = seam.row ? seam.row.getBoundingClientRect() : null
+        const height = rowRect ? Math.round(rowRect.height) : 0
+        writeText(label, 'textContent', '↑↓ 拖动调整 · ' + rowLabelOf(seam) + (height ? ' · ' + height + 'px' : ''))
+      }
       if (root.getAttribute(ATTR_SEAM) !== '1') root.setAttribute(ATTR_SEAM, '1')
       ui.rowSeam = seam
       // 兜底：指针离开/滚轮/失焦时事件可能不来，2.5 秒没动静就自己收起来。
@@ -1988,6 +1992,57 @@ window.__ModuleLoader__.load({
      * 真实宿主里出问题时不需要用户开 DevTools：直接读这个键就能知道
      * 跑的是哪一版、各块的实际矩形、面板列表里到底有哪几行。
      */
+    /**
+     * 把底栏的真实几何打一行到控制台：宿主会把渲染进程 console 写进日志文件，
+     * 这样即使 localStorage 被 leveldb 压缩掉，也能从磁盘读到现场。
+     */
+    function logFooter() {
+      if (!ui.panes || !ui.root) return
+      try {
+        const box = (el) => {
+          const r = el.getBoundingClientRect()
+          return [Math.round(r.top), Math.round(r.height)]
+        }
+        const foot = paneElement(ui.panes, 'foot')
+        const line = {
+          v: PLUGIN_VERSION,
+          root: box(ui.root),
+          contentH: contentBoxHeight(ui.root),
+          heights: state.heights,
+          rows: state.rows,
+          scopes: rowScopes(ui.panes).map((scope) => scope.id + ':' + scope.rows.length),
+          seams: rowSeams().map((seam) => seam.key),
+          foot: foot
+            ? Array.from(foot.children)
+                .filter((child) => !ownNode(child))
+                .map((child) => {
+                  const cs = window.getComputedStyle(child)
+                  return {
+                    cls: String(child.className || '').slice(0, 30),
+                    txt: String(child.textContent || '').replace(/\s+/g, ' ').trim().slice(0, 18),
+                    box: box(child),
+                    h: cs.height,
+                    mt: cs.marginTop,
+                    kids: child.children.length,
+                  }
+                })
+            : [],
+          acct: accountEl
+            ? { box: box(accountEl), mt: window.getComputedStyle(accountEl).marginTop, h: window.getComputedStyle(accountEl).height }
+            : null,
+        }
+        const text = JSON.stringify(line)
+        // 主通道：localStorage（重启后可从 leveldb 读，量小不易被压缩吞掉）。
+        try { window.localStorage.setItem(DUMP2_KEY, text) } catch (error) { /* 忽略 */ }
+        if (!window.__DSH_SW_QUIET__) {
+          console.log('[dsh-sidebar-sections] ' + text)
+          try {
+            if (typeof logger === 'object' && logger && typeof logger.info === 'function') logger.info(text)
+          } catch (error) { /* 忽略 */ }
+        }
+      } catch (error) { /* 诊断失败不影响功能 */ }
+    }
+
     function writeDump() {
       if (!ui.root || !ui.panes) return
       try {
@@ -2217,6 +2272,7 @@ window.__ModuleLoader__.load({
         status(lastStatus)
 
         // 诊断快照：首轮立刻落一次，2.5 秒后再落一次（布局稳定后的最终形态）。
+        logFooter()
         if (!dumpedOnce) { dumpedOnce = true; writeDump() }
         if (!dumpTimer) dumpTimer = window.setTimeout(() => { dumpTimer = 0; writeDump() }, 2500)
       } catch (error) {
