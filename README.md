@@ -95,6 +95,12 @@ https://raw.githubusercontent.com/nullifyi/dsh-sidebar-width/main/market/index.j
 
 ## 变更记录
 
+### v0.6.11
+- **压缩的行不再「往旁边跑、只剩一个图标」**：以前对行的子元素逐个 `zoom` + 宽度反补偿，压紧时图标和文字各缩各的、整体往左偏。现在行级压缩只缩字号（`fitRow()`），并强制 `white-space:nowrap` + 省略号，横向布局不动。
+- **头像贴底**：不再要求「头像行自己的容器」有富余空间（它通常内容自适应，`margin-top:auto` 等于没写）。改成让 `foot` 的第一个真实子元素吃 `margin-top:auto`；foot 一旦被拖高，整块内容（含头像）就贴在底部。
+- **拖动时不再抖动/闪烁**：`sanitizeHeights()` 与 `enforceBudget()` 在拖拽期间全部跳过。之前「拖动写 h0+dy」与「预算把高度压回去」每帧互相打架，表现为底栏/头像上下跳。
+- 快照新增 `account` 与 `accountPinHost`（头像行矩形、贴底目标的计算样式），便于远程确认贴底是否生效。
+
 ### v0.6.10
 - **修好诊断快照**：`writeDump()` 从 v0.6.9 起就定义了却没人调用，所以 `localStorage['dsh-sidebar-sections:dump']` 一直不存在。现在首轮渲染后立刻写一次、2.5 秒后再写一次（布局稳定后的最终形态）。
 - 快照里补了 `navHTML`（面板列表的 innerHTML 前 2600 字符）和 `rootChildren`（根节点下每个非自有子元素的标签/类名/矩形/计算样式），用来判断「某一行不见了」是插件自己压的还是别的插件挪走的。

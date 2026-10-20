@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.10'
+    const PLUGIN_VERSION = '0.6.11'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v4'
@@ -767,6 +767,21 @@ window.__ModuleLoader__.load({
       return base
     }
 
+    /**
+     * 行级压缩：只缩字号，绝不 zoom 整行、也不 zoom 行内各子元素。
+     * 以前逐个子元素 zoom + 宽度反补偿，一压紧图标和文字各缩各的，内容整体往旁边跑，
+     * 最后只剩一个图标。
+     */
+    function fitRow(row, h, naturalIn) {
+      for (const kid of Array.from(row.children)) {
+        if (kid.getAttribute(ATTR_ZOOM) !== null || kid.style.getPropertyValue('zoom')) clearChildZoom(kid)
+        dropStyle(kid, 'width')
+      }
+      writeStyle(row, 'white-space', 'nowrap', 'important')
+      writeStyle(row, 'text-overflow', 'ellipsis', 'important')
+      return fitFont(row, h, naturalIn)
+    }
+
     function fitFont(el, h, naturalIn) {
       const base = fontBaseOf(el, naturalIn)
       if (!h || !base.natural) return 1
@@ -1230,7 +1245,7 @@ window.__ModuleLoader__.load({
           writeStyle(row, 'overflow', 'hidden', 'important')
           row.setAttribute(ATTR_ROW, key)
           // 账号行只改高度，绝不缩里面的字号和头像。
-          if (key !== ACCOUNT_KEY) applyFit(row, Math.max(0, saved), rowNatural(row))
+          if (key !== ACCOUNT_KEY) fitRow(row, Math.max(0, saved), rowNatural(row))
           else clearFit(row)
         }
       }
@@ -1268,13 +1283,21 @@ window.__ModuleLoader__.load({
       if (row.getAttribute(ATTR_FONT) !== null) row.removeAttribute(ATTR_FONT)
       writeStyle(row, 'flex-grow', '0', 'important')
       writeStyle(row, 'flex-shrink', '0', 'important')
-      let last = null
-      const parent = row.parentNode
-      if (parent) {
-        for (const child of parent.children) if (!ownNode(child)) last = child
+      // 贴底不依赖头像行的父容器是否自适应：直接让 foot 的第一个真实子元素吃 auto 外边距。
+      // foot 是原生高度时 auto 没有富余空间、等于不生效；一旦 foot 被拖高，
+      // 这一条就把整块内容（含头像）压到最底部，头像不会再浮在中间。
+      const footEl = ui.panes ? paneElement(ui.panes, 'foot') : null
+      const kids = footEl ? Array.from(footEl.children).filter((child) => !ownNode(child)) : []
+      for (const child of kids) {
+        if (child !== kids[0]) dropStyle(child, 'margin-top')
+        else writeStyle(child, 'margin-top', 'auto', 'important')
       }
-      if (last === row) writeStyle(row, 'margin-top', 'auto', 'important')
-      else dropStyle(row, 'margin-top')
+      dropStyle(row, 'margin-top')
+      if (footEl && kids.length === 0) return true
+      if (kids.length) {
+        writeStyle(kids[0], 'flex-grow', '0', 'important')
+        writeStyle(kids[0], 'flex-shrink', '0', 'important')
+      }
       return true
     }
 
@@ -1892,6 +1915,15 @@ window.__ModuleLoader__.load({
           panes,
           navChildren: nav ? Array.from(nav.children).slice(0, 12).map(describe) : [],
           navHTML: nav ? String(nav.innerHTML || '').slice(0, 2600) : '',
+          account: accountEl ? describe(accountEl) : null,
+          accountPinHost: (() => {
+            const footEl = ui.panes ? paneElement(ui.panes, 'foot') : null
+            if (!footEl) return null
+            const first = Array.from(footEl.children).filter((child) => !ownNode(child))[0] || null
+            if (!first) return null
+            const cs = window.getComputedStyle(first)
+            return { cls: String(first.className || '').slice(0, 60), marginTop: cs.marginTop, flexGrow: cs.flexGrow, flexShrink: cs.flexShrink }
+          })(),
           rootChildren: Array.from(ui.root.children).filter((el) => !ownNode(el)).slice(0, 14).map(describe),
           footChildren: foot ? Array.from(foot.children).slice(0, 8).map(describe) : []
         }
@@ -1989,10 +2021,12 @@ window.__ModuleLoader__.load({
         // 行高先落地：块级缩放要能看见 ATTR_ROW，才不会把已单独调过的行再缩一次。
         applyRowSizing(panes)
         // 只对用户拖过的高度做预算归一；没动过的块保持原生高度（不会再被压到看不见）。
-        const trimmed = sanitizeHeights(panes, contentBoxHeight(root))
+        // 拖拽过程中绝不归一：否则“拖动写 h0+dy”和“预算压回”每帧互相打架，
+        // 表现为底栏/头像上下闪烁。
+        const trimmed = drag ? false : sanitizeHeights(panes, contentBoxHeight(root))
         const sizing = applyPaneSizing(panes, root)
         // 用真实 rect 再兜一层：存储里的值、外来块、换行都可能让行内高度估不准。
-        const trimmed2 = enforceBudget(panes, root)
+        const trimmed2 = drag ? false : enforceBudget(panes, root)
         const fixedKeys = paneKeys(panes).filter((key) => key !== 'main')
 
         // 被调整过高度的固定块：内容放不下就等比缩字号。
