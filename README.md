@@ -60,3 +60,32 @@ node harness\settings-test.mjs  # 10 项：设置页注册与渲染
 ```
 
 夹具在 `harness/test.mjs` 里用 jsdom 合成了一套侧栏骨架，通过 `getBoundingClientRect` 打桩模拟 flex 布局（jsdom 不做排版），因此断言的是**渲染高度、样式值、存储内容**这些可观察结果。
+
+## 从「插件市场」安装（dsh-market）
+
+本仓库同时提供一份符合 DSH **插件市场索引格式 1** 的索引文件：`market/index.json`。
+在 DSH 的 **插件 → 发现** 里点「添加索引源」，粘贴：
+
+```
+https://raw.githubusercontent.com/nullifyi/dsh-sidebar-width/main/market/index.json
+```
+
+添加后可在「发现」里按 名称/关键词/分类/标签 搜索到「侧栏分区拖拽」，条目里会显示版本 `0.6.1`、作者、仓库与安装按钮；安装走的是固定在提交 `98afe8b` 的 `git+https` 源。索引条目字段：
+
+| 字段 | 值 |
+| --- | --- |
+| `name` | `dsh-sidebar-width` |
+| `metadata.category` | `sidebar`（侧栏） |
+| `metadata.labels` | `resizable` 可拖拽调整、`collapsible` 可折叠、`chinese` 中文界面 |
+| `metadata.keywords` | 侧栏 / 侧边栏 / 拖拽调整 / 分割条 / 折叠 + sidebar / sash / splitview / resizable / collapse |
+
+索引标题、描述、分类、标签都带 `en` 与 `zh` 两份文案，市场按当前界面语言显示；`en` 是格式 1 的必填项。
+
+### 发新版时
+
+改 `market/index.json` 里该插件的 `versions`：追加一条 `{ version, publishTimestamp, source: { type: "git", url, commit } }`（`commit` 用已推送的 40 位 SHA），再更新 `metadata.sortKeys.updated`。
+
+## 关于 Topics 与标签
+
+- **GitHub topics 只能用 ASCII**（小写字母、数字、连字符），所以仓库 topics 是 `dsh` `dsh-plugin` `deepseek-harness` `sidebar` `sash` `splitview` `resizable` `collapsible`。
+- **中文标签**放在两处：`package.json` 的 `keywords`（npm 标签，含 侧栏/侧边栏/拖拽调整/分割条/折叠）和插件市场索引的 `metadata.keywords` / 分类 / 标签中文标题里。

@@ -11,7 +11,14 @@
     "sidebar",
     "splitview",
     "sash",
-    "collapse"
+    "collapse",
+    "compact",
+    "resizable",
+    "侧栏",
+    "侧边栏",
+    "拖拽调整",
+    "分割条",
+    "折叠"
   ],
   "exports": {
     ".": "./index.js",

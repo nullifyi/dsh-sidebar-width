@@ -1,0 +1,110 @@
+{
+  "format": 1,
+  "title": {
+    "en": "nullifyi DSH plugins",
+    "zh": "nullifyi 的 DSH 插件"
+  },
+  "description": {
+    "en": "Small, focused plugins for the DeepSeek Harness desktop sidebar.",
+    "zh": "给 DeepSeek Harness 侧栏用的小而专注的插件。"
+  },
+  "metadata": {
+    "categories": {
+      "sidebar": {
+        "title": {
+          "en": "Sidebar",
+          "zh": "侧栏"
+        }
+      },
+      "layout": {
+        "title": {
+          "en": "Layout",
+          "zh": "布局"
+        }
+      }
+    },
+    "labels": {
+      "resizable": {
+        "title": {
+          "en": "Resizable",
+          "zh": "可拖拽调整"
+        }
+      },
+      "collapsible": {
+        "title": {
+          "en": "Collapsible",
+          "zh": "可折叠"
+        }
+      },
+      "chinese": {
+        "title": {
+          "en": "Chinese UI",
+          "zh": "中文界面"
+        }
+      }
+    },
+    "sortKeys": {
+      "updated": {
+        "title": {
+          "en": "Updated",
+          "zh": "更新时间"
+        },
+        "order": "desc"
+      }
+    }
+  },
+  "plugins": [
+    {
+      "name": "dsh-sidebar-width",
+      "title": {
+        "en": "Sidebar Sash Dividers",
+        "zh": "侧栏分区拖拽"
+      },
+      "description": {
+        "en": "VS Code style sash dividers in the DSH sidebar: drag block boundaries and per-row boundaries, content shrinks with the space, and blocks collapse into icons above the avatar.",
+        "zh": "DSH 侧栏的 VS Code 式分割条：可拖动区块边界与每一行的边界，空间变小时字号与内容自动缩小，区块可折叠成头像上方的图标。"
+      },
+      "icon": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAyNCAyNCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNGQ2YmZlIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1saW5lY2FwPSJyb3VuZCI+PHBhdGggZD0iTTQgNWgxNk00IDEwaDE2TTQgMTloMTYiLz48cGF0aCBkPSJNNCAxNC41aDE2IiBzdHJva2UtZGFzaGFycmF5PSIyIDIiLz48L3N2Zz4=",
+      "author": "nullifyi",
+      "homepage": "https://github.com/nullifyi/dsh-sidebar-width#readme",
+      "repository": {
+        "url": "https://github.com/nullifyi/dsh-sidebar-width"
+      },
+      "metadata": {
+        "category": "sidebar",
+        "keywords": [
+          "侧栏",
+          "侧边栏",
+          "拖拽调整",
+          "分割条",
+          "折叠",
+          "分区",
+          "sidebar",
+          "sash",
+          "splitview",
+          "resizable",
+          "collapse"
+        ],
+        "labels": [
+          "resizable",
+          "collapsible",
+          "chinese"
+        ],
+        "sortKeys": {
+          "updated": 1792508410
+        }
+      },
+      "versions": [
+        {
+          "version": "0.6.1",
+          "publishTimestamp": 1792508410,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/nullifyi/dsh-sidebar-width",
+            "commit": "98afe8be5498f1c70666406e37302f2f9fc2fe7e"
+          }
+        }
+      ]
+    }
+  ]
+}
