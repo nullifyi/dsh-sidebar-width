@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.12'
+    const PLUGIN_VERSION = '0.6.13'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -1307,22 +1307,17 @@ window.__ModuleLoader__.load({
       if (row.getAttribute(ATTR_FONT) !== null) row.removeAttribute(ATTR_FONT)
       writeStyle(row, 'flex-grow', '0', 'important')
       writeStyle(row, 'flex-shrink', '0', 'important')
-      // 贴底不依赖头像行的父容器是否自适应：直接让 foot 的第一个真实子元素吃 auto 外边距。
-      // foot 是原生高度时 auto 没有富余空间、等于不生效；一旦 foot 被拖高，
-      // 这一条就把整块内容（含头像）压到最底部，头像不会再浮在中间。
+      // 不再把底部内容“压”到视口最下面：用户明确要的是头像跟着内容走，
+      // 不是被钉在窗口底部（钉底会让它和上一块之间空出一大片，还会把用量卡顶出盒子）。
       const footEl = ui.panes ? paneElement(ui.panes, 'foot') : null
       const kids = footEl ? Array.from(footEl.children).filter((child) => !ownNode(child)) : []
       for (const child of kids) {
-        if (child !== kids[0]) dropStyle(child, 'margin-top')
-        else writeStyle(child, 'margin-top', 'auto', 'important')
+        dropStyle(child, 'margin-top')
+        writeStyle(child, 'flex-grow', '0', 'important')
+        writeStyle(child, 'flex-shrink', '0', 'important')
       }
       dropStyle(row, 'margin-top')
-      if (footEl && kids.length === 0) return true
-      if (kids.length) {
-        writeStyle(kids[0], 'flex-grow', '0', 'important')
-        writeStyle(kids[0], 'flex-shrink', '0', 'important')
-      }
-      return true
+      return kids.length > 0
     }
 
     /** 这一行还能长多高：把主区（工作区与会话）压到 MIN_MAIN 为止，余量都给它。 */
