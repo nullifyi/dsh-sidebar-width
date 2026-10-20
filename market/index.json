@@ -97,6 +97,15 @@
       },
       "versions": [
         {
+          "version": "0.6.8",
+          "publishTimestamp": 1792514781,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/nullifyi/dsh-sidebar-width",
+            "commit": "a7d7ab6885ac4fcf3ab95b21e3358f395462a382"
+          }
+        },
+        {
           "version": "0.6.7",
           "publishTimestamp": 1792514049,
           "source": {
@@ -106,21 +115,12 @@
           }
         },
         {
-          "version": "0.6.1",
-          "publishTimestamp": 1792508410,
+          "version": "0.6.5",
+          "publishTimestamp": 1792514460,
           "source": {
             "type": "git",
             "url": "https://github.com/nullifyi/dsh-sidebar-width",
-            "commit": "98afe8be5498f1c70666406e37302f2f9fc2fe7e"
-          }
-        },
-        {
-          "version": "0.6.3",
-          "publishTimestamp": 1792510238,
-          "source": {
-            "type": "git",
-            "url": "https://github.com/nullifyi/dsh-sidebar-width",
-            "commit": "32a29c7ece3363a678a81300d68c5c9db4693202"
+            "commit": "0f0eac651aca619bcd4c5b84b86057c57584d9ef"
           }
         },
         {
@@ -133,12 +133,21 @@
           }
         },
         {
-          "version": "0.6.5",
-          "publishTimestamp": 1792514460,
+          "version": "0.6.3",
+          "publishTimestamp": 1792510238,
           "source": {
             "type": "git",
             "url": "https://github.com/nullifyi/dsh-sidebar-width",
-            "commit": "0f0eac651aca619bcd4c5b84b86057c57584d9ef"
+            "commit": "32a29c7ece3363a678a81300d68c5c9db4693202"
+          }
+        },
+        {
+          "version": "0.6.1",
+          "publishTimestamp": 1792508410,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/nullifyi/dsh-sidebar-width",
+            "commit": "98afe8be5498f1c70666406e37302f2f9fc2fe7e"
           }
         }
       ]
