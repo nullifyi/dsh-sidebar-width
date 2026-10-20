@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.9'
+    const PLUGIN_VERSION = '0.6.10'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v4'
@@ -1891,6 +1891,8 @@ window.__ModuleLoader__.load({
           rail: isRail(),
           panes,
           navChildren: nav ? Array.from(nav.children).slice(0, 12).map(describe) : [],
+          navHTML: nav ? String(nav.innerHTML || '').slice(0, 2600) : '',
+          rootChildren: Array.from(ui.root.children).filter((el) => !ownNode(el)).slice(0, 14).map(describe),
           footChildren: foot ? Array.from(foot.children).slice(0, 8).map(describe) : []
         }
         window.localStorage.setItem(DUMP_KEY, JSON.stringify(dump))
@@ -1912,6 +1914,8 @@ window.__ModuleLoader__.load({
     // 会在我们写完之后再回调一次，没有这个闸门就会变成“写 → 观察 → 再写”的死循环。
     let lastSig = ''
     let lastStatus = ''
+    let dumpTimer = 0
+    let dumpedOnce = false
     // 我们自己写 DOM 时置真：MutationObserver/ResizeObserver 的读回调据此跳过，
     // 否则“写样式 → 观察器 → 再写”会自激成整条侧栏闪烁。
     let writing = false
@@ -2020,6 +2024,10 @@ window.__ModuleLoader__.load({
         for (const id of fixedKeys) if (savedHeight(id) !== null) h.push(id + '=' + savedHeight(id))
         lastStatus = 'panes:' + h.join(' ') + ' rows:' + Object.keys(rowOverrides()).length + ' fit:' + fitted + ' trim:0 hidden:' + state.hidden.length
         status(lastStatus)
+
+        // 诊断快照：首轮立刻落一次，2.5 秒后再落一次（布局稳定后的最终形态）。
+        if (!dumpedOnce) { dumpedOnce = true; writeDump() }
+        if (!dumpTimer) dumpTimer = window.setTimeout(() => { dumpTimer = 0; writeDump() }, 2500)
       } catch (error) {
         fault(error && error.message ? error.message : String(error))
       } finally {

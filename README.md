@@ -95,6 +95,10 @@ https://raw.githubusercontent.com/nullifyi/dsh-sidebar-width/main/market/index.j
 
 ## 变更记录
 
+### v0.6.10
+- **修好诊断快照**：`writeDump()` 从 v0.6.9 起就定义了却没人调用，所以 `localStorage['dsh-sidebar-sections:dump']` 一直不存在。现在首轮渲染后立刻写一次、2.5 秒后再写一次（布局稳定后的最终形态）。
+- 快照里补了 `navHTML`（面板列表的 innerHTML 前 2600 字符）和 `rootChildren`（根节点下每个非自有子元素的标签/类名/矩形/计算样式），用来判断「某一行不见了」是插件自己压的还是别的插件挪走的。
+
 ### v0.6.9
 - **主区下限从 64 提到 96**：64px 时工作区只剩一条被截断的会话行，看起来像“底部压住了上一行”；96px 至少能看出是列表。
 - **可确认宿主跑的是哪一版**：根节点写 `data-dsh-sw-version`，`localStorage['dsh-sidebar-sections:boot']` 记录 `{v,t}`；启动 2.5 秒后另写一份现场快照 `localStorage['dsh-sidebar-sections:dump']`（各块矩形、面板列表子节点、计算样式、状态串），排障时不用开 DevTools。
