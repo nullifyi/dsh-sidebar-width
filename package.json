@@ -1,0 +1,39 @@
+{
+  "name": "dsh-sidebar-width",
+  "version": "0.6.1",
+  "description": "DeepSeek Harness plugin: VS Code style sash dividers in the left sidebar, a second level of per-row sashes, auto-shrinking content when squeezed, an account/avatar row that stays pinned and never scales, and per-block collapse into icons above the avatar.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
+    "sidebar",
+    "splitview",
+    "sash",
+    "collapse"
+  ],
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "immediately": true,
+      "inject": []
+    }
+  },
+  "files": [
+    "index.js",
+    "client.js",
+    "cordis.patch.yml",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  }
+}
