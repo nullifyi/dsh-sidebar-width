@@ -62,6 +62,10 @@ window.__ModuleLoader__.load({
     const ATTR_ZOOM = 'data-dsh-sw-zoom'
     const ATTR_ROW = 'data-dsh-sw-row'
     const ATTR_RSASH = 'data-dsh-sw-rsash'
+    const ATTR_ROW_HINT = 'data-dsh-sw-rowhint'
+    const ATTR_ROW_LABEL = 'data-dsh-sw-rowlabel'
+    const ATTR_SEAM = 'data-dsh-sw-seam'
+    const ATTR_DRAGGING = 'data-dsh-sw-dragging'
     const ATTR_ROWSPACE = 'data-dsh-sw-rowspace'
     const ATTR_FONT = 'data-dsh-sw-font'
 
@@ -178,14 +182,13 @@ window.__ModuleLoader__.load({
 
 /* 行级 sash：每一条可单独调整的“行”下面都有一条，做法与 pane sash 一致，
    默认只显示一个小握把，鼠标移上去才浮现，不挡点击（热区 7px 落在行间缝里）。 */
-[${ATTR_ROWSPACE}]{position:absolute;inset:0;pointer-events:none;z-index:6}
-[${ATTR_RSASH}]{position:absolute;left:0;right:0;height:7px;margin-top:-3px;pointer-events:auto;
-  cursor:row-resize;touch-action:none;z-index:6;background:transparent}
-[${ATTR_RSASH}]::after{content:'';position:absolute;left:12px;top:2px;width:14px;height:3px;border-radius:2px;
-  background:var(--dsw-alias-label-tertiary,rgba(128,128,128,.45));opacity:.35;
-  transition:opacity .12s ease,width .12s ease,background .12s ease}
-[${ATTR_RSASH}]:hover::after,[${ATTR_RSASH}][data-dsh-sw-active]::after{opacity:1;width:24px;
-  background:var(--dsw-alias-brand-primary,#4d6bfe)}
+[${ATTR_ROW_HINT}]{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--dsw-alias-brand-primary,#4d6bfe);
+  pointer-events:none;z-index:9;display:none}
+[${ATTR_ROW_HINT}]>span{position:absolute;right:6px;top:-18px;font-size:10px;line-height:14px;padding:1px 6px;
+  border-radius:4px;color:#fff;background:var(--dsw-alias-brand-primary,#4d6bfe);white-space:nowrap}
+[${ATTR_SEAM}],[${ATTR_DRAGGING}]{cursor:row-resize}
+[${ATTR_SEAM}] *,[${ATTR_DRAGGING}]*{cursor:row-resize!important}
+[${ATTR_DRAGGING}]{user-select:none}
 `
 
     function injectCss() {
@@ -292,6 +295,17 @@ window.__ModuleLoader__.load({
       if (el.hasAttribute(ATTR_DOCK) || el.hasAttribute(ATTR_GUTTER) || el.hasAttribute(ATTR_SASH)) return true
       if (el.hasAttribute(ATTR_ROWSPACE) || el.hasAttribute(ATTR_RSASH)) return true
       return el.hasAttribute(ATTR_CHIP) || el.hasAttribute(ATTR_TIP)
+    }
+
+    /** 事件是否落在插件自己的节点上（gutter / dock / 提示 / 行缝提示 / sash）。 */
+    function insideOwnNodes(el) {
+      let node = el
+      while (node && node.nodeType === 1) {
+        if (node === ui.gutter || node === ui.dock || node === ui.rowHint || node === tipEl) return true
+        if (node.getAttribute && node.getAttribute(ATTR_SASH) !== null) return true
+        node = node.parentNode
+      }
+      return false
     }
 
     function findRoot() {
@@ -650,7 +664,7 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 自有节点 ---------------- */
 
-    const ui = { dock: null, gutter: null, root: null, panes: null, sashes: {}, rowSashes: {}, rowScopes: [] }
+    const ui = { dock: null, gutter: null, root: null, panes: null, sashes: {}, rowScopes: [], rowHint: null, rowSeam: null }
 
     function ensureDock(root) {
       if (ui.dock && ui.dock.isConnected) return ui.dock
@@ -845,6 +859,8 @@ window.__ModuleLoader__.load({
       // 只按了一下没拖动：不写盘、不改状态，保持原样。
       if (!finished.moved) return
       if (finished.kind === 'row') {
+        suppressClickUntil = Date.now() + 250
+        hideRowHint()
         const rows = { ...rowOverrides() }
         if (Math.abs(finished.h - (finished.natural || 0)) <= 1) delete rows[finished.key]
         else rows[finished.key] = finished.h
@@ -939,72 +955,6 @@ window.__ModuleLoader__.load({
       return true
     }
 
-    function ensureRowSpace(scope) {
-      let space = null
-      for (const child of scope.container.children) {
-        if (child.getAttribute && child.getAttribute(ATTR_ROWSPACE) === scope.id) { space = child; break }
-      }
-      if (!space) {
-        space = document.createElement('div')
-        space.setAttribute(ATTR_ROWSPACE, scope.id)
-        space.setAttribute('aria-hidden', 'true')
-        try { scope.container.appendChild(space) } catch (error) { return null }
-      }
-      try {
-        const view = scope.container.ownerDocument && scope.container.ownerDocument.defaultView
-        const cs = view && view.getComputedStyle(scope.container)
-        if (cs && cs.position === 'static') writeStyle(scope.container, 'position', 'relative', 'important')
-      } catch (error) { /* 拿不到样式就不改定位 */ }
-      return space
-    }
-
-    function makeRowSash(key, scopeId, index) {
-      const sash = document.createElement('div')
-      sash.setAttribute(ATTR_RSASH, key)
-      sash.setAttribute('role', 'separator')
-      sash.setAttribute('aria-orientation', 'horizontal')
-      sash.setAttribute('aria-label', '调整这一行的高度')
-      sash.title = '拖动：调整这一行高度（双击复位）'
-      sash.addEventListener('pointerdown', (event) => onRowSashDown(event, key, scopeId, index))
-      sash.addEventListener('dblclick', (event) => {
-        event.preventDefault()
-        event.stopPropagation()
-        resetRow(key)
-      })
-      sash.addEventListener('touchstart', (event) => event.preventDefault(), { passive: false })
-      return sash
-    }
-
-    function renderRowSashes(panes) {
-      const scopes = rowScopes(panes)
-      ui.rowScopes = scopes
-      const seen = new Set()
-      for (const scope of scopes) {
-        if (!scopeVisible(scope)) continue
-        const space = ensureRowSpace(scope)
-        if (!space) continue
-        const containerRect = scope.container.getBoundingClientRect()
-        for (let i = 0; i < scope.rows.length - 1; i += 1) {
-          const key = scope.id + ':' + i
-          seen.add(key)
-          let sash = ui.rowSashes[key]
-          if (!sash || !sash.isConnected) {
-            sash = makeRowSash(key, scope.id, i)
-            ui.rowSashes[key] = sash
-          }
-          if (sash.parentNode !== space) space.appendChild(sash)
-          const rect = scope.rows[i].getBoundingClientRect()
-          writeStyle(sash, 'top', Math.round(rect.bottom - containerRect.top - 3) + 'px')
-        }
-      }
-      for (const key of Object.keys(ui.rowSashes)) {
-        if (seen.has(key)) continue
-        const sash = ui.rowSashes[key]
-        if (sash && sash.parentNode) sash.parentNode.removeChild(sash)
-        delete ui.rowSashes[key]
-      }
-    }
-
     function applyRowSizing(panes) {
       for (const scope of rowScopes(panes)) {
         if (!scopeVisible(scope)) continue
@@ -1080,39 +1030,196 @@ window.__ModuleLoader__.load({
       return Math.max(natural, natural + Math.max(0, contentH - fixed))
     }
 
-    function onRowSashDown(event, key, scopeId, index) {
+    /* 行级拖拽不走任何覆盖元素：命中在 root 上用坐标算，既不会挡点击，
+       也不会出现“多个横线”的残留。 */
+
+    const SEAM_REACH = 4
+
+    /** 当前可拖的行缝列表（client 坐标）；每条缝管它上面那一行。 */
+    function rowSeams() {
+      const out = []
+      if (!ui.panes) return out
+      let scopes
+      try {
+        scopes = rowScopes(ui.panes)
+      } catch (error) {
+        return out
+      }
+      for (const scope of scopes) {
+        if (!scopeVisible(scope)) continue
+        const containerRect = scope.container.getBoundingClientRect()
+        if (!containerRect.height) continue
+        for (let i = 0; i < scope.rows.length - 1; i += 1) {
+          const rect = scope.rows[i].getBoundingClientRect()
+          if (!rect || rect.height < 1) continue
+          out.push({
+            key: scope.id + ':' + i,
+            row: scope.rows[i],
+            y: rect.bottom,
+            x0: containerRect.left,
+            x1: containerRect.right,
+          })
+        }
+      }
+      return out
+    }
+
+    function rowSeamAt(clientY, clientX) {
+      let best = null
+      let bestDelta = SEAM_REACH + 1
+      for (const seam of rowSeams()) {
+        if (typeof clientX === 'number' && (clientX < seam.x0 - 6 || clientX > seam.x1 + 6)) continue
+        const delta = Math.abs(clientY - seam.y)
+        if (delta <= SEAM_REACH && delta < bestDelta) { bestDelta = delta; best = seam }
+      }
+      return best
+    }
+
+    function rowLabelOf(seam) {
+      const row = seam.row
+      let text = ''
+      try {
+        text = (row.getAttribute('aria-label') || row.textContent || '').replace(/\s+/g, ' ').trim()
+      } catch (error) { text = '' }
+      if (!text) text = '这一行'
+      if (text.length > 14) text = text.slice(0, 14) + '…'
+      return text
+    }
+
+    function ensureRowHint(gutter) {
+      let hint = ui.rowHint
+      if (hint && hint.parentNode === gutter) return hint
+      hint = document.createElement('div')
+      hint.setAttribute(ATTR_ROW_HINT, '')
+      hint.setAttribute('aria-hidden', 'true')
+      const label = document.createElement('span')
+      label.setAttribute(ATTR_ROW_LABEL, '')
+      hint.appendChild(label)
+      try { gutter.appendChild(hint) } catch (error) { return null }
+      ui.rowHint = hint
+      return hint
+    }
+
+    function showRowHint(seam, root) {
+      const gutter = ui.gutter
+      if (!gutter || !root) return
+      const hint = ensureRowHint(gutter)
+      if (!hint) return
+      const rootRect = root.getBoundingClientRect()
+      writeStyle(hint, 'top', Math.round(seam.y - rootRect.top) + 'px')
+      writeStyle(hint, 'display', 'block')
+      const label = hint.querySelector('[' + ATTR_ROW_LABEL + ']')
+      if (label) writeText(label, 'textContent', '↑ 压缩 · ' + rowLabelOf(seam))
+      if (root.getAttribute(ATTR_SEAM) !== '1') root.setAttribute(ATTR_SEAM, '1')
+      ui.rowSeam = seam
+    }
+
+    function hideRowHint() {
+      const hint = ui.rowHint
+      if (hint) writeStyle(hint, 'display', 'none')
+      const root = ui.root
+      if (root && root.getAttribute(ATTR_SEAM) !== null) root.removeAttribute(ATTR_SEAM)
+      ui.rowSeam = null
+    }
+
+    /** 鼠标经过（不拖动）时只负责显示/隐藏提示线，不接管事件。 */
+    function onHoverMove(event) {
       if (!listening || drag) return
-      if (event.pointerType === 'mouse' && typeof event.button === 'number' && event.button !== 0) return
-      const scope = (ui.rowScopes || []).find((item) => item.id === scopeId)
-      if (!scope || !scope.rows[index]) return
-      const row = scope.rows[index]
-      const panes = ui.panes
-      if (!panes) return
-      // 行缝的热区会压住行底边 2px：这里先不吞事件，等真的拖起来（>3px）再接管，
-      // 于是“贴着底边点一下按键”仍然是普通点击。
+      const root = ui.root
+      if (!root) return
+      if (!root.contains(event.target)) { hideRowHint(); return }
+      if (insideOwnNodes(event.target)) { hideRowHint(); return }
+      const seam = rowSeamAt(event.clientY, event.clientX)
+      if (seam) showRowHint(seam, root)
+      else hideRowHint()
+    }
+
+    function beginRowDrag(event, seam) {
+      const row = seam.row
       const natural = Math.max(MIN_ROW, rowNatural(row) || Math.round(row.getBoundingClientRect().height || MIN_ROW))
-      const saved = rowSaved(key)
+      const saved = rowSaved(seam.key)
       const h0 = saved === null ? natural : saved
       drag = {
         kind: 'row',
-        key,
-        scopeId,
-        index,
+        key: seam.key,
+        row,
         y0: event.clientY,
         h0,
         natural,
         min: MIN_ROW,
-        max: Math.max(h0, rowGrowthLimit(panes, ui.root, natural)),
+        max: Math.max(h0, rowGrowthLimit(ui.panes, ui.root, natural)),
         h: h0,
         started: false,
+        moved: false,
       }
-      if (ui.root) ui.root.setAttribute('data-dsh-sw-dragging', '1')
-      const sash = ui.rowSashes[key]
-      if (sash) sash.setAttribute('data-dsh-sw-active', '')
+      hideRowHint()
+      const root = ui.root
+      if (root) root.setAttribute(ATTR_DRAGGING, '1')
       window.addEventListener('pointermove', onDragMove, true)
       window.addEventListener('pointerup', onDragEnd, true)
       window.addEventListener('pointercancel', onDragEnd, true)
     }
+
+    /** 按下：只在缝 ±4px 内“记账”，不 preventDefault，所以贴着缝点按键仍是正常点击。 */
+    function onRowDown(event) {
+      if (!listening || drag) return
+      const root = ui.root
+      if (!root || !root.contains(event.target)) return
+      if (insideOwnNodes(event.target)) return
+      if (event.target && event.target.closest && event.target.closest('[' + ATTR_SASH + ']')) return
+      if (event.pointerType === 'mouse' && typeof event.button === 'number' && event.button !== 0) return
+      const seam = rowSeamAt(event.clientY, event.clientX)
+      if (!seam) return
+      beginRowDrag(event, seam)
+    }
+
+    function onRowDblClick(event) {
+      if (!listening) return
+      const root = ui.root
+      if (!root || !root.contains(event.target)) return
+      const seam = rowSeamAt(event.clientY, event.clientX)
+      if (!seam) return
+      event.preventDefault()
+      event.stopPropagation()
+      resetRow(seam.key)
+    }
+
+    /** 拖完的那一下 click 不要落到行上（否则会顺手打开面板/切工作区）。 */
+    let suppressClickUntil = 0
+
+    function onClickCapture(event) {
+      if (!suppressClickUntil) return
+      if (Date.now() > suppressClickUntil) { suppressClickUntil = 0; return }
+      event.preventDefault()
+      event.stopPropagation()
+      suppressClickUntil = 0
+    }
+
+    function sweepRowNodes() {
+      const root = ui.root
+      if (!root) return
+      for (const attr of [ATTR_ROWSPACE, ATTR_RSASH]) {
+        const nodes = root.querySelectorAll('[' + attr + ']')
+        for (const node of Array.from(nodes)) if (node.parentNode) node.parentNode.removeChild(node)
+      }
+    }
+
+    /** 捕获期监听里抛错会静默终止后续逻辑：统一兜底并把错误写进诊断属性。 */
+    function guard(fn) {
+      return function guarded(event) {
+        try {
+          fn(event)
+        } catch (error) {
+          fault(error && error.message ? error.message : String(error))
+        }
+      }
+    }
+
+    const rowDownGuarded = guard(onRowDown)
+    const hoverMoveGuarded = guard(onHoverMove)
+    const rowDblClickGuarded = guard(onRowDblClick)
+    const clickGuarded = guard(onClickCapture)
+    const hideRowHintGuarded = guard(hideRowHint)
 
     function resetRow(key) {
       const rows = { ...rowOverrides() }
@@ -1396,8 +1503,6 @@ window.__ModuleLoader__.load({
         if (isRail(root)) {
           for (const sash of Object.values(ui.sashes)) if (sash.parentNode) sash.parentNode.removeChild(sash)
           ui.sashes = {}
-          for (const sash of Object.values(ui.rowSashes)) if (sash.parentNode) sash.parentNode.removeChild(sash)
-          ui.rowSashes = {}
           writeStyle(dock, 'display', 'none')
           status('rail')
           return
@@ -1428,7 +1533,7 @@ window.__ModuleLoader__.load({
         renderSashes(root, panes)
         applyRowSizing(panes)
         applyAccountPin()
-        renderRowSashes(panes)
+        sweepRowNodes()
         applyCollapseButtons(panes, root)
         renderDock(panes, root, dock)
 
@@ -1465,6 +1570,11 @@ window.__ModuleLoader__.load({
 
       window.addEventListener('resize', onResize, { passive: true })
       window.addEventListener('scroll', onResize, true)
+      window.addEventListener('pointerdown', rowDownGuarded, true)
+      window.addEventListener('pointermove', hoverMoveGuarded, true)
+      window.addEventListener('pointerleave', hideRowHintGuarded, true)
+      window.addEventListener('dblclick', rowDblClickGuarded, true)
+      window.addEventListener('click', clickGuarded, true)
 
       // root 晚于 apply 出现、或被 React 重挂时补挂观察器；稳定 6 秒后自动收手。
       let ticks = 0
@@ -1528,6 +1638,15 @@ window.__ModuleLoader__.load({
         if (sash && sash.parentNode) sash.parentNode.removeChild(sash)
       }
       ui.sashes = {}
+      if (ui.rowHint && ui.rowHint.parentNode) ui.rowHint.parentNode.removeChild(ui.rowHint)
+      ui.rowHint = null
+      ui.rowSeam = null
+      suppressClickUntil = 0
+      window.removeEventListener('pointerdown', rowDownGuarded, true)
+      window.removeEventListener('pointermove', hoverMoveGuarded, true)
+      window.removeEventListener('pointerleave', hideRowHintGuarded, true)
+      window.removeEventListener('dblclick', rowDblClickGuarded, true)
+      window.removeEventListener('click', clickGuarded, true)
       if (tipEl && tipEl.parentNode) tipEl.parentNode.removeChild(tipEl)
       tipEl = null
       ui.dock = null
