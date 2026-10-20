@@ -49,8 +49,10 @@ window.__ModuleLoader__.load({
 
     /* ---------------- 常量 ---------------- */
 
-    const STORE_KEY = 'dsh-sidebar-sections:v3'
+    const STORE_KEY = 'dsh-sidebar-sections:v4'
     const LEGACY_KEY = 'dsh-sidebar-sections:v2'
+    // v3 的行高是 0.6.1 早期版本在真实宿主里写坏的（行被压到十几像素、字号缩到底），旧值一律不继承。
+    const LEGACY_V3 = 'dsh-sidebar-sections:v3'
     const CSS_ID = 'dsh-sidebar-sections-css'
     const ATTR_BLOCK = 'data-dsh-sw-block'
     const ATTR_PANE = 'data-dsh-sw-pane'
@@ -182,9 +184,9 @@ window.__ModuleLoader__.load({
 
 /* 行级 sash：每一条可单独调整的“行”下面都有一条，做法与 pane sash 一致，
    默认只显示一个小握把，鼠标移上去才浮现，不挡点击（热区 7px 落在行间缝里）。 */
-[${ATTR_ROW_HINT}]{position:absolute;left:0;right:0;height:0;border-top:2px solid var(--dsw-alias-brand-primary,#4d6bfe);
-  pointer-events:none;z-index:9;display:none}
-[${ATTR_ROW_HINT}]>span{position:absolute;right:6px;top:-18px;font-size:10px;line-height:14px;padding:1px 6px;
+[${ATTR_ROW_HINT}]{position:absolute;left:50%;width:26px;height:3px;margin-left:-13px;border-radius:2px;
+  background:var(--dsw-alias-brand-primary,#4d6bfe);pointer-events:none;z-index:9;display:none}
+[${ATTR_ROW_HINT}]>span{position:absolute;left:20px;top:-6px;font-size:10px;line-height:14px;padding:1px 6px;
   border-radius:4px;color:#fff;background:var(--dsw-alias-brand-primary,#4d6bfe);white-space:nowrap}
 [${ATTR_SEAM}],[${ATTR_DRAGGING}]{cursor:row-resize}
 [${ATTR_SEAM}] *,[${ATTR_DRAGGING}]*{cursor:row-resize!important}
@@ -213,11 +215,22 @@ window.__ModuleLoader__.load({
     function readStore() {
       const fallback = emptyState()
       try {
-        const raw = window.localStorage.getItem(STORE_KEY)
+        let raw = window.localStorage.getItem(STORE_KEY)
         if (!raw) {
           // 老版本（v2，逐行 zoom）直接丢弃：模型换了，旧数值没有可比性。
           try { window.localStorage.removeItem(LEGACY_KEY) } catch (error) { /* 隐私模式 */ }
-          return fallback
+          // v3 → v4：只继承“块高度 + 折叠状态”，行高不继承（旧版本写坏过）。
+          const stale = window.localStorage.getItem(LEGACY_V3)
+          if (stale) {
+            try {
+              const old = JSON.parse(stale)
+              const migrated = { heights: old.heights || {}, rows: {}, hidden: old.hidden || [] }
+              window.localStorage.setItem(STORE_KEY, JSON.stringify(migrated))
+              window.localStorage.removeItem(LEGACY_V3)
+              raw = window.localStorage.getItem(STORE_KEY)
+            } catch (error) { raw = null }
+          }
+          if (!raw) return fallback
         }
         const parsed = JSON.parse(raw)
         if (!parsed || typeof parsed !== 'object') return fallback
@@ -1086,6 +1099,8 @@ window.__ModuleLoader__.load({
       return text
     }
 
+    let hintTimer = 0
+
     function ensureRowHint(gutter) {
       let hint = ui.rowHint
       if (hint && hint.parentNode === gutter) return hint
@@ -1112,9 +1127,14 @@ window.__ModuleLoader__.load({
       if (label) writeText(label, 'textContent', '↑ 压缩 · ' + rowLabelOf(seam))
       if (root.getAttribute(ATTR_SEAM) !== '1') root.setAttribute(ATTR_SEAM, '1')
       ui.rowSeam = seam
+      // 兜底：指针离开/滚轮/失焦时事件可能不来，2.5 秒没动静就自己收起来。
+      if (hintTimer) window.clearTimeout(hintTimer)
+      hintTimer = window.setTimeout(() => { hintTimer = 0; hideRowHint() }, 2500)
     }
 
+
     function hideRowHint() {
+      if (hintTimer) { window.clearTimeout(hintTimer); hintTimer = 0 }
       const hint = ui.rowHint
       if (hint) writeStyle(hint, 'display', 'none')
       const root = ui.root
@@ -1552,6 +1572,9 @@ window.__ModuleLoader__.load({
 
     function onResize() { schedule() }
 
+    /** 滚动会让缝的坐标失效，顺手把提示线收起来。 */
+    function onScroll() { hideRowHint(); schedule() }
+
     function start() {
       if (listening) return
       listening = true
@@ -1569,10 +1592,11 @@ window.__ModuleLoader__.load({
       hookRootObserver()
 
       window.addEventListener('resize', onResize, { passive: true })
-      window.addEventListener('scroll', onResize, true)
+      window.addEventListener('scroll', onScroll, true)
       window.addEventListener('pointerdown', rowDownGuarded, true)
       window.addEventListener('pointermove', hoverMoveGuarded, true)
       window.addEventListener('pointerleave', hideRowHintGuarded, true)
+      window.addEventListener('blur', hideRowHintGuarded, true)
       window.addEventListener('dblclick', rowDblClickGuarded, true)
       window.addEventListener('click', clickGuarded, true)
 
@@ -1628,7 +1652,7 @@ window.__ModuleLoader__.load({
       resizeObserver = null
       observedRoot = null
       window.removeEventListener('resize', onResize)
-      window.removeEventListener('scroll', onResize, true)
+      window.removeEventListener('scroll', onScroll, true)
       window.removeEventListener('pointermove', onDragMove, true)
       window.removeEventListener('pointerup', onDragEnd, true)
       window.removeEventListener('pointercancel', onDragEnd, true)
@@ -1645,6 +1669,7 @@ window.__ModuleLoader__.load({
       window.removeEventListener('pointerdown', rowDownGuarded, true)
       window.removeEventListener('pointermove', hoverMoveGuarded, true)
       window.removeEventListener('pointerleave', hideRowHintGuarded, true)
+      window.removeEventListener('blur', hideRowHintGuarded, true)
       window.removeEventListener('dblclick', rowDblClickGuarded, true)
       window.removeEventListener('click', clickGuarded, true)
       if (tipEl && tipEl.parentNode) tipEl.parentNode.removeChild(tipEl)
