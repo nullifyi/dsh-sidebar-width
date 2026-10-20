@@ -72,7 +72,14 @@ window.__ModuleLoader__.load({
     const ATTR_FONT = 'data-dsh-sw-font'
 
     /** 每块最低高度：再低就点不到里面的按键了。 */
-    const MIN_PANE = { brand: 22, new: 22, nav: 22, foot: 22 }
+    const MIN_PANE = { brand: 22, new: 22, nav: 36, foot: 48 }
+    // 下限不能超过这一块自己的原生高度：布局天生比下限还小时（小屏、外来块），
+    // 强行抬到下限会让“一拖就跳”，拖动起点也就错了。
+    const paneMin = (id, natural) => {
+      const hard = MIN_PANE[id] || 18
+      const nat = Math.round(natural || 0)
+      return nat > 0 ? Math.min(hard, Math.max(14, nat)) : hard
+    }
     /** 主区（工作区/会话）至少留这么高，否则页面等于没了。 */
     const MIN_MAIN = 64
     /** 内容超过分配高度时，最多缩到原尺寸的 42%（字号 14 → 5.9，仍可见）。 */
@@ -213,7 +220,7 @@ window.__ModuleLoader__.load({
     let version = 0
 
     function emptyState() {
-      return { heights: {}, rows: {}, hidden: [] }
+      return { mode: 'keep', heights: {}, rows: {}, hidden: [] }
     }
 
     function readStore() {
@@ -262,7 +269,12 @@ window.__ModuleLoader__.load({
             if (h >= MIN_ROW) rows[key] = h
           }
         }
-        return { heights, rows, hidden: [...new Set(hidden)] }
+        const mode = parsed.mode === 'reset' ? 'reset' : 'keep'
+        if (mode === 'reset') {
+          // 设成“重启后保持默认”：每次启动都把块高与行高清掉，回到原生布局。
+          return { mode, heights: {}, rows: {}, hidden: [...new Set(hidden)] }
+        }
+        return { mode, heights, rows, hidden: [...new Set(hidden)] }
       } catch (error) {
         return fallback
       }
@@ -471,14 +483,99 @@ window.__ModuleLoader__.load({
       return height > 0 ? height : 0
     }
 
-    // 记每个 pane 的“原生高度”：一旦我们给它写过高度，rect 就不再是原生值了，
-    // 直接拿 rect 做预算会把“上一轮压出来的高度”当成原生高度，导致预算反复自我放宽。
-    const paneNative = new WeakMap()
+    /**
+     * 只有“被拖过的高度”才参与预算归一（VS Code SplitView.distributeEmptySpace 的做法：
+     * 空间不够时按优先级把差值摊到可伸缩的项上，并夹在 minimumSize 以内）。
+     * 没被拖过的块一律保持原生高度 —— 以前把没动过的块也压小，结果面板行被压到看不见。
+     */
+    function sanitizeHeights(panes, contentH) {
+      if (!contentH) return false
+      const keys = paneKeys(panes).filter((key) => key !== 'main')
+      const dyn = {}
+      let fixedSum = 0
+      for (const id of keys) {
+        const el = paneElement(panes, id)
+        const saved = savedHeight(id)
+        if (saved === null) {
+          const rect = el ? el.getBoundingClientRect() : null
+          fixedSum += Math.max(1, Math.round((rect && rect.height) || 0))
+        } else {
+          dyn[id] = saved
+        }
+      }
+      if (!Object.keys(dyn).length) return false
+      const budget = Math.max(0, contentH - MIN_MAIN - fixedSum)
+      let sum = 0
+      for (const id of Object.keys(dyn)) sum += dyn[id]
+      let guard = 0
+      while (sum > budget && guard < 64) {
+        guard += 1
+        let pick = null
+        for (const id of Object.keys(dyn)) {
+          if (dyn[id] > (MIN_PANE[id] || 18) && (!pick || dyn[id] > dyn[pick])) pick = id
+        }
+        if (!pick) break
+        const over = sum - budget
+        const room = dyn[pick] - paneMin(pick, dyn[pick])
+        const take = Math.min(room, Math.max(1, Math.ceil(over / 2)))
+        dyn[pick] -= take
+        sum -= take
+      }
+      let changed = false
+      for (const id of Object.keys(dyn)) {
+        if (state.heights[id] !== dyn[id]) {
+          state.heights[id] = dyn[id]
+          changed = true
+        }
+      }
+      return changed
+    }
+
+    /**
+     * 用真实排版结果兜底（对应 VS Code SplitView.distributeEmptySpace：
+     * 按实际差量把空出来的空间摊回去，直到不溢出为止）。
+     * 只压“用户自己拖过的高度”，没动过的块一律保持原生高度。
+     */
+    function enforceBudget(panes, root) {
+      let changed = false
+      for (let round = 0; round < 6; round += 1) {
+        const contentH = contentBoxHeight(root)
+        if (!contentH) break
+        let used = 0
+        let prevBottom = null
+        const dyn = []
+        for (const id of paneKeys(panes)) {
+          const el = paneElement(panes, id)
+          if (!el) continue
+          const rect = el.getBoundingClientRect()
+          if (!rect) continue
+          // 块与块之间还有外边距，只加高度会漏算；main 也要算进总高度（它本身就是 flex 伸缩项）。
+          if (prevBottom !== null) used += Math.max(0, rect.top - prevBottom)
+          used += Math.round(rect.height || 0)
+          prevBottom = rect.bottom
+          if (id === 'main') continue
+          const cur = savedHeight(id)
+          if (cur !== null && cur - paneMin(id, cur) > 0) dyn.push(id)
+        }
+        const over = used - contentH
+        if (over <= 0 || !dyn.length) break
+        let picked = null
+        for (const id of dyn) {
+          if (!picked || savedHeight(id) > savedHeight(picked)) picked = id
+        }
+        if (!picked) break
+        const cur = savedHeight(picked)
+        const floor = paneMin(picked, cur)
+        state.heights[picked] = cur - Math.min(cur - floor, Math.max(1, Math.ceil(over)))
+        changed = true
+        applyPaneSizing(panes, root)
+      }
+      return changed
+    }
 
     function applyPaneSizing(panes, root) {
       const contentH = contentBoxHeight(root)
       const heights = {}
-      const nativeOf = {}
       const fixed = paneKeys(panes).filter((key) => key !== 'main')
       for (const id of fixed) {
         const el = paneElement(panes, id)
@@ -486,29 +583,8 @@ window.__ModuleLoader__.load({
         const saved = savedHeight(id)
         const rect = el.getBoundingClientRect()
         const min = MIN_PANE[id] || 18
-        const natural = paneNative.get(el) ?? Math.max(min, Math.round(rect.height || 0))
-        paneNative.set(el, natural)
-        const measured = Math.max(min, Math.round(natural))
-        nativeOf[id] = measured
+        const measured = Math.max(min, Math.round(rect.height || 0))
         heights[id] = saved === null ? measured : Math.max(min, saved)
-      }
-
-      // 总高不能超过内容高度：超了就从 nav → foot → new → brand 依次压回去。
-      if (contentH > 0) {
-        let total = 0
-        for (const id of fixed) total += heights[id] || 0
-        let overflow = total + MIN_MAIN - contentH
-        const squeeze = ['nav', 'foot', 'new', 'brand'].concat(fixed.filter((k) => !['nav', 'foot', 'new', 'brand'].includes(k)))
-        for (const id of squeeze) {
-          if (overflow <= 0) break
-          const current = heights[id] || 0
-          const room = Math.max(0, current - (MIN_PANE[id] || 18))
-          const take = Math.min(room, overflow)
-          if (take > 0) {
-            heights[id] = current - take
-            overflow -= take
-          }
-        }
       }
 
       // 注意：这里的压缩**只用于本次渲染**，绝不写回存储。
@@ -519,10 +595,7 @@ window.__ModuleLoader__.load({
         const el = paneElement(panes, id)
         if (!el) continue
         const h = heights[id]
-        // 没被拖过的块：只要这一轮没被预算压小，就完全交还原生布局；
-        // 被压小时仍要写高度（纯展示用，不落盘），否则它会按原生高度把下面顶出去。
-        const untouched = savedHeight(id) === null && h >= (nativeOf[id] || 0)
-        if (untouched) {
+        if (savedHeight(id) === null) {
           // 没被调整过：完全交还原生布局，但仍要能被自身内容撑开。
           dropStyle(el, 'flex')
           dropStyle(el, 'flex-grow')
@@ -703,6 +776,27 @@ window.__ModuleLoader__.load({
       writeStyle(el, 'font-size', (base.size * z).toFixed(2) + 'px', 'important')
       writeStyle(el, 'line-height', '1.25', 'important')
       el.setAttribute(ATTR_FONT, String(z))
+      return z
+    }
+
+    /**
+     * 按“内容是否真的放不下”决定要不要缩放；放得下就一律 zoom:1。
+     * 以前用「高度 ÷ 自然高度」，而自然高度是在已经有缩放/已写死高度之后测的，
+     * 重载后会把上一次的缩放进基准里，结果越叠越小。
+     */
+    function fitPane(pane, hIn) {
+      const kids = fitChildren(pane)
+      if (!kids.length) return 1
+      for (const kid of kids) setChildZoom(kid, 1)
+      const rect = pane.getBoundingClientRect()
+      // 优先用这一轮即将写入的高度：rect 可能还没随新样式重排（拖动时尤其明显）。
+      const h = Math.round(hIn || (rect && rect.height) || 0)
+      if (!h) return 1
+      const natural = pane.scrollHeight || 0
+      if (!natural || natural <= h + 1) return 1
+      const z = Math.max(MIN_FIT, Math.round((h / natural) * 1000) / 1000)
+      const zoomable = (kid) => kid.getAttribute(ATTR_ROW) === null
+      for (const kid of kids) setChildZoom(kid, zoomable(kid) ? z : 1)
       return z
     }
 
@@ -890,16 +984,16 @@ window.__ModuleLoader__.load({
       for (const id of fixed) {
         const el = paneElement(panes, id)
         const saved = savedHeight(id)
-        heights[id] = saved !== null ? saved : el ? Math.max(MIN_PANE[id] || 18, unconstrainedHeight(el)) : 0
+        heights[id] = saved !== null ? saved : el ? unconstrainedHeight(el) : 0
       }
 
       // 原生高度：拖回这个值就等于“取消覆盖”，不能拿当前（可能已被压缩的）高度当基准。
       const targetEl = paneElement(panes, target)
-      const native = targetEl ? Math.max(MIN_PANE[target] || 18, unconstrainedHeight(targetEl)) : heights[target] || 18
+      const native = targetEl ? unconstrainedHeight(targetEl) : heights[target] || 18
 
       // 可增长的上限：内容高度 − 主区下限 − 其它固定块的当前高度。
       const others = fixed.filter((id) => id !== target).reduce((sum, id) => sum + (heights[id] || 0), 0)
-      const max = Math.max(MIN_PANE[target] || 22, contentH - MIN_MAIN - others)
+      const max = Math.max(paneMin(target, native), contentH - MIN_MAIN - others)
       // main|foot 这条分界反向：往上拖 = foot 变高。
       const inverted = spec ? spec.inverted : sashId === 'foot'
 
@@ -911,7 +1005,7 @@ window.__ModuleLoader__.load({
             up: {
               target: 'foot',
               inverted: true,
-              h0: heights.foot || MIN_PANE.foot || 22,
+              h0: heights.foot || 0,
               natural: paneElement(panes, 'foot') ? unconstrainedHeight(paneElement(panes, 'foot')) : heights.foot || 22,
             },
           }
@@ -923,11 +1017,11 @@ window.__ModuleLoader__.load({
         inverted,
         dual,
         y0: event.clientY,
-        h0: heights[target] || MIN_PANE[target] || 18,
+        h0: heights[target] || native,
         natural: native,
-        min: MIN_PANE[target] || 18,
+        min: paneMin(target, native),
         max,
-        h: heights[target] || MIN_PANE[target] || 18,
+        h: heights[target] || native,
       }
       if (root) root.setAttribute('data-dsh-sw-dragging', '1')
       const sash = ui.sashes[sashId]
@@ -947,7 +1041,7 @@ window.__ModuleLoader__.load({
         if (paneHidden(key)) continue
         const el = paneElement(panes, key)
         const saved = savedHeight(key)
-        others += saved !== null ? saved : el ? Math.max(MIN_PANE[key] || 18, unconstrainedHeight(el)) : 0
+        others += saved !== null ? saved : el ? unconstrainedHeight(el) : 0
       }
       return Math.max(MIN_PANE[target] || 22, contentH - MIN_MAIN - others)
     }
@@ -971,7 +1065,7 @@ window.__ModuleLoader__.load({
         drag.h0 = pick.h0
         drag.natural = pick.natural
         drag.max = Math.max(pick.h0, contentHMax(pick.target))
-        drag.min = MIN_PANE[pick.target] || 18
+        drag.min = paneMin(pick.target, drag.natural)
         drag.h = pick.h0
       }
       const raw = drag.h0 + (drag.inverted ? -dy : dy)
@@ -1818,7 +1912,11 @@ window.__ModuleLoader__.load({
         applyCollapse(panes)
         // 行高先落地：块级缩放要能看见 ATTR_ROW，才不会把已单独调过的行再缩一次。
         applyRowSizing(panes)
+        // 只对用户拖过的高度做预算归一；没动过的块保持原生高度（不会再被压到看不见）。
+        const trimmed = sanitizeHeights(panes, contentBoxHeight(root))
         const sizing = applyPaneSizing(panes, root)
+        // 用真实 rect 再兜一层：存储里的值、外来块、换行都可能让行内高度估不准。
+        const trimmed2 = enforceBudget(panes, root)
         const fixedKeys = paneKeys(panes).filter((key) => key !== 'main')
 
         // 被调整过高度的固定块：内容放不下就等比缩字号。
@@ -1828,11 +1926,11 @@ window.__ModuleLoader__.load({
           if (!el) continue
           if (isPaneHidden(id)) { clearFit(el); continue }
           if (savedHeight(id) === null) { clearFit(el); continue }
-          const h = sizing.heights[id]
-          const z = applyFit(el, Math.max(0, h - 2))
+          const z = fitPane(el, sizing.heights[id])
           if (z < 1) fitted += 1
         }
 
+        if ((trimmed || trimmed2) && !drag) persist()
         renderSashes(root, panes)
         applyAccountPin()
         sweepRowNodes()
@@ -1996,6 +2094,12 @@ window.__ModuleLoader__.load({
       padding: '6px 12px',
       cursor: 'pointer',
     }
+    const activeButtonStyle = {
+      ...buttonStyle,
+      borderColor: 'var(--dsw-alias-brand-primary)',
+      color: 'var(--dsw-alias-brand-primary)',
+      fontWeight: 600,
+    }
     const hintStyle = { fontSize: '12px', color: 'var(--dsw-alias-label-secondary)' }
     const codeStyle = {
       fontFamily: 'var(--dsw-font-family-mono, monospace)',
@@ -2056,6 +2160,30 @@ window.__ModuleLoader__.load({
             state.hidden.length === 0
               ? '无'
               : state.hidden.map((id) => BLOCK_LABEL[id] || id).join('、'),
+          ),
+        ),
+        row(
+          'mode',
+          '重启后',
+          React.createElement(
+            'div',
+            { style: { display: 'flex', gap: '8px', flexWrap: 'wrap' } },
+            React.createElement(
+              'button',
+              {
+                style: state.mode === 'reset' ? buttonStyle : activeButtonStyle,
+                onClick: () => commit({ mode: 'keep' }),
+              },
+              '继承上次布局（默认）',
+            ),
+            React.createElement(
+              'button',
+              {
+                style: state.mode === 'keep' ? buttonStyle : activeButtonStyle,
+                onClick: () => commit({ mode: 'reset' }),
+              },
+              '每次启动回到默认',
+            ),
           ),
         ),
         row(
