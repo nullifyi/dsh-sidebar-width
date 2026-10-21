@@ -109,6 +109,55 @@ async function sharedBounds(page) {
   expect((await box(page, '.avatar')).width).toBeCloseTo(32, 0)
 }
 
+// The installed host's footer.action slot is a real box, not contents.
+// Its children include a flex-column framed card plus entry buttons.
+async function boxedFooter(page) {
+  await sharedFooter(page)
+  await page.locator('[data-slot="sidebar.footer.action"]').evaluate(el => el.style.display = 'block')
+  await page.locator('[data-slot="sidebar.footer.action"]').evaluate(el => {
+    el.append(document.querySelector('#remote'))
+  })
+  await page.locator('#usage').evaluate(el => {
+    el.style.display = 'flex'
+    el.style.flexDirection = 'column'
+  })
+}
+
+test('flex-column framed cards scale all text instead of resizing their internal lines', async ({ page }) => {
+  await boot(page, undefined, async page => {
+    await page.locator('#usage').evaluate(el => {
+      el.style.display = 'flex'
+      el.style.flexDirection = 'column'
+    })
+  })
+  const card = await box(page, '#usage')
+  const line = await box(page, '#usage .line:first-child')
+  await drag(page, card.x + 90, card.y + card.height - 1, -45)
+  expect((await box(page, '#usage')).height).toBeLessThan(card.height - 30)
+  expect((await box(page, '#usage .line:first-child')).height).toBeLessThan(line.height * .8)
+  await noOverlap(page)
+})
+
+test('boxed action slots share the bottom icon row and shrink whole flex cards', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{new:47,nav:113,foot:568}, rows:{'foot0-0:0':103,'foot0:3':75,'foot0:0':117,'foot0:1':49}, hidden:[]}, boxedFooter)
+  await sharedBounds(page)
+  const card = await box(page, '#usage')
+  const line = await box(page, '#usage .line:first-child')
+  await dragSash(page, 'foot', 500)
+  expect((await box(page, '#usage')).height).toBeLessThan(card.height - 15)
+  expect((await box(page, '#usage .line:first-child')).height).toBeLessThan(line.height * .9)
+  await sharedBounds(page)
+  for (const width of [220, 280, 360]) {
+    await page.locator('#root').evaluate((el, width) => el.style.width = width + 'px', width)
+    await page.setViewportSize({width:900, height:570})
+    await page.waitForTimeout(150)
+    await sharedBounds(page)
+  }
+  await page.screenshot({path:test.info().outputPath('boxed-footer.png')})
+  await page.evaluate(() => window.dispose())
+  expect(await page.locator('[data-slot]').evaluate(el => el.style.display)).toBe('block')
+})
+
 test('shared contents footer shrinks cards and keeps account plus entries on one bottom row', async ({ page }) => {
   await boot(page, undefined, sharedFooter)
   const usage = await box(page, '#usage')

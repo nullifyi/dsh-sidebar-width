@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.21'
+    const PLUGIN_VERSION = '0.6.22'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -547,6 +547,17 @@ window.__ModuleLoader__.load({
     }
 
     function layoutSidebar(panes, root) {
+      // The shell may render the action slot as a real box. In the remote
+      // plugin's shared/wrapped footer it must expose its children to the
+      // same grid as settings, without moving any React-owned elements.
+      if (panes.foot) {
+        const cs = window.getComputedStyle(panes.foot)
+        if (cs.flexDirection.startsWith('row') && cs.flexWrap === 'wrap') {
+          for (const slot of panes.foot.querySelectorAll('[data-slot="sidebar.footer.action"]')) {
+            if (window.getComputedStyle(slot).display !== 'none') layoutStyle(slot, 'display', 'contents')
+          }
+        }
+      }
       const rowKeys = new Map()
       for (const [key, el] of rowElementsByKey(panes)) if (!rowKeys.has(el)) rowKeys.set(el, key)
       layoutNodes = new Map()
@@ -1045,11 +1056,13 @@ window.__ModuleLoader__.load({
       const isRowContainer = (el) => {
         try {
           const cs = window.getComputedStyle(el)
+          // Framed/padded cards are atomic even when their own layout is
+          // flex-column. Descendant text and progress bars must zoom together.
+          if (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].some(prop => parseFloat(cs[prop]) > 0)) return false
           if (cs.display === 'flex' || cs.display === 'inline-flex') return !cs.flexDirection.startsWith('row')
           // Plain host wrappers are vertical even though their computed
-          // flexDirection defaults to "row". A padded/framed content card,
-          // however, is one resizable unit, not a group of text-line seams.
-          return !['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].some(prop => parseFloat(cs[prop]) > 0)
+          // flexDirection defaults to "row".
+          return true
         } catch (error) { return false }
       }
       const collect = (container, id, depth) => {
@@ -1058,6 +1071,8 @@ window.__ModuleLoader__.load({
         // 穿透纯包裹层：宿主很多容器只有 1 个子元素，真正的一排在更里面。
         let node = container
         for (let guard = 0; guard < 4; guard += 1) {
+          const cs = window.getComputedStyle(node)
+          if (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].some(prop => parseFloat(cs[prop]) > 0)) return
           const kids = boxChildren(node)
           if (kids.length !== 1) break
           const inner = kids[0]
