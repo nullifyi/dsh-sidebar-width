@@ -50,6 +50,135 @@ async function nativeFooter(page, backgroundAvatar = false) {
     }
   }, backgroundAvatar)
 }
+
+// Real shell slots + remote-web-ui's wide footer contract (display:contents,
+// ordered full-width cards and settings sharing a final row with two entries).
+async function sharedFooter(page) {
+  await page.evaluate(() => {
+    document.body.setAttribute('data-dsh-frame', '')
+    const foot = document.querySelector('#foot')
+    const settings = document.querySelector('.settings')
+    settings.className = 'host_settingsArea'
+    const actions = document.createElement('div')
+    actions.className = 'host_footerActions'
+    const slot = document.createElement('div')
+    slot.dataset.slot = 'sidebar.footer.action'
+    slot.style.display = 'contents'
+    const stack = document.createElement('div')
+    stack.className = 'cm-footer-stack'
+    stack.append(document.querySelector('#usage'), document.querySelector('#remote'))
+    slot.append(stack)
+    for (const id of ['square', 'phone']) {
+      const entry = document.createElement('button')
+      entry.id = id
+      entry.className = 'entryRow'
+      entry.dataset.dshPart = 'entry'
+      entry.textContent = id === 'square' ? '□' : '☎'
+      slot.append(entry)
+    }
+    actions.append(slot)
+    foot.prepend(actions, document.querySelector('#status'))
+  })
+  await page.addStyleTag({ content: `
+    [data-dsh-frame] [class*='footArea'] { flex-direction:row;flex-wrap:wrap;align-items:center }
+    [data-dsh-frame] [class*='footArea'] > :not([class*='settingsArea']):not([class*='footerActions']) { flex:1 1 100%;min-width:0 }
+    [data-dsh-frame] [class*='footArea'] > [class*='footerActions'] { display:contents }
+    [data-dsh-frame] [class*='footerActions'] > [data-slot] > :not([data-dsh-part='entry']) { flex:1 1 100%;order:1;min-width:0 }
+    [data-dsh-frame] [class*='footerActions'] > [data-slot] > [data-dsh-part='entry'] { flex:0 0 auto;order:4;min-width:0 }
+    [data-dsh-frame] [class*='settingsArea'] { order:3;flex:1 1 auto;width:auto;min-width:0 }
+    .cm-footer-stack { display:flex;flex:none;order:-1;flex-direction:column;gap:6px;width:100%;min-width:0;max-width:100%;align-items:stretch }
+    .entryRow { width:36px;height:36px;border:0;border-radius:50%;padding:0 }
+  ` })
+}
+
+async function sharedBounds(page) {
+  await noOverlap(page)
+  const foot = await box(page, '#foot')
+  const main = await box(page, '#main')
+  const account = await box(page, '#account')
+  const square = await box(page, '#square')
+  const phone = await box(page, '#phone')
+  expect(account.y + account.height).toBeCloseTo(foot.y + foot.height, 0)
+  expect(square.x + square.width).toBeLessThanOrEqual(phone.x + 1)
+  expect(account.x + account.width).toBeLessThanOrEqual(square.x + 1)
+  for (const r of [square, phone]) {
+    expect(r.y + r.height).toBeCloseTo(account.y + account.height, 0)
+    expect(r.x + r.width).toBeLessThanOrEqual(foot.x + foot.width + 1)
+  }
+  expect((await box(page, '#usage')).y).toBeGreaterThanOrEqual(main.y + main.height - 1)
+  expect((await box(page, '.avatar')).width).toBeCloseTo(32, 0)
+}
+
+test('shared contents footer shrinks cards and keeps account plus entries on one bottom row', async ({ page }) => {
+  await boot(page, undefined, sharedFooter)
+  const usage = await box(page, '#usage')
+  const foot = await box(page, '#foot')
+  await dragSash(page, 'foot', 65)
+  expect((await box(page, '#foot')).height).toBeLessThan(foot.height - 40)
+  expect((await box(page, '#usage')).height).toBeLessThan(usage.height - 10)
+  await sharedBounds(page)
+})
+
+test('shared contents footer consumes slack before moving the account and survives viewport changes', async ({ page }) => {
+  await boot(page, { mode:'keep', heights:{foot:568}, rows:{}, hidden:[] }, sharedFooter)
+  const usage = await box(page, '#usage')
+  const account = await box(page, '#account')
+  const foot = await box(page, '#foot')
+  const main = await box(page, '#main')
+  await drag(page, usage.x + 90, usage.y + usage.height - 1, 50)
+  expect((await box(page, '#usage')).height).toBeCloseTo(usage.height + 50, 0)
+  expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
+  expect((await box(page, '#foot')).height).toBeCloseTo(foot.height, 0)
+  expect((await box(page, '#main')).height).toBeCloseTo(main.height, 0)
+  await sharedBounds(page)
+  await page.setViewportSize({ width:900, height:570 })
+  await page.waitForTimeout(180)
+  await sharedBounds(page)
+})
+
+test('layout diagnostics are saved for the shared footer', async ({ page }) => {
+  await boot(page, undefined, sharedFooter)
+  await expect.poll(() => page.evaluate(() => JSON.parse(localStorage.getItem('dsh-sidebar-sections:dump'))?.scopes.length)).toBeGreaterThan(0)
+})
+
+test('shared footer preserves legacy saved requests and restores native slots on unload', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{new:47, nav:113, foot:568}, rows:{'foot0-0:0':103,'foot0:3':75,'foot0:0':117,'foot0:1':49}, hidden:[]}, sharedFooter)
+  for (const width of [220, 268, 360]) {
+    await page.locator('#root').evaluate((el, width) => el.style.width = width + 'px', width)
+    await page.waitForTimeout(150)
+    await sharedBounds(page)
+    await dragSash(page, 'foot', 80)
+    await sharedBounds(page)
+  }
+  await page.evaluate(() => window.dispose())
+  expect(await page.locator('.host_footerActions').evaluate(el => getComputedStyle(el).display)).toBe('contents')
+  expect(await page.locator('#foot').evaluate(el => getComputedStyle(el).display)).toBe('flex')
+  expect(await page.locator('#foot').evaluate(el => el.style.gridTemplateRows)).toBe('')
+  await expect(page.locator('[data-dsh-sw-sash]')).toHaveCount(0)
+})
+
+test('full-width card margins stay above the status in a shared footer', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:340}, rows:{}, hidden:[]}, async page => {
+    await sharedFooter(page)
+    await page.locator('.cm-footer-stack').evaluate(el => el.style.marginBottom = '12px')
+  })
+  const stack = await box(page, '.cm-footer-stack')
+  const status = await box(page, '#status')
+  expect(status.y).toBeGreaterThanOrEqual(stack.y + stack.height + 11)
+  await sharedBounds(page)
+})
+
+test('shared footer reflows when entry plugins are removed', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:340}, rows:{}, hidden:[]}, sharedFooter)
+  await page.locator('#square, #phone').evaluateAll(entries => entries.forEach(entry => entry.remove()))
+  await page.waitForTimeout(180)
+  await noOverlap(page)
+  const foot = await box(page, '#foot')
+  const account = await box(page, '#account')
+  expect(account.width).toBeCloseTo(foot.width, 0)
+  expect(account.y + account.height).toBeCloseTo(foot.y + foot.height, 0)
+  await page.screenshot({path:test.info().outputPath('shared-footer.png')})
+})
 async function noOverlap(page) {
   await expect(page.locator('html')).not.toHaveAttribute('data-dsh-sw-fault', /.+/)
   const names = ['brand', 'new', 'nav', 'main', 'foot']

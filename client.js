@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.20'
+    const PLUGIN_VERSION = '0.6.21'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -537,6 +537,15 @@ window.__ModuleLoader__.load({
       return sizes
     }
 
+    // display:contents participates through its children, never through a 0px box.
+    function boxChildren(el) {
+      return Array.from(el.children).flatMap(child => {
+        if (ownNode(child)) return []
+        const display = window.getComputedStyle(child).display
+        return display === 'none' ? [] : display === 'contents' ? boxChildren(child) : [child]
+      })
+    }
+
     function layoutSidebar(panes, root) {
       const rowKeys = new Map()
       for (const [key, el] of rowElementsByKey(panes)) if (!rowKeys.has(el)) rowKeys.set(el, key)
@@ -549,12 +558,33 @@ window.__ModuleLoader__.load({
         const cs = window.getComputedStyle(el)
         const natural = Math.max(1, rect.height)
         const key = rowKeys.get(el)
-        const children = Array.from(el.children).filter(child => !ownNode(child) && window.getComputedStyle(child).display !== 'none')
+        const children = boxChildren(el)
+        const sharedFooter = el === panes.foot && cs.flexDirection.startsWith('row') && cs.flexWrap === 'wrap'
         const containsRows = children.some(child => rowKeys.has(child) || Array.from(rowKeys.keys()).some(row => child.contains(row)))
         const vertical = cs.display !== 'flex' || !cs.flexDirection.startsWith('row')
-        const kids = containsRows && (vertical || children.length === 1) ? children.map(makeNode) : []
+        let kids = containsRows && (vertical || children.length === 1 || sharedFooter) ? children.map(makeNode) : []
+        if (sharedFooter && kids.length) {
+          const bottom = kids.filter(child => child.el.contains(accountEl) || child.el.matches('[data-dsh-part="entry"], [class*="entryRow"]'))
+          if (bottom.some(child => child.el.contains(accountEl))) {
+            bottom.sort((a, b) => number(window.getComputedStyle(a.el).order) - number(window.getComputedStyle(b.el).order))
+            // These are native icon controls sharing the account line, not cards
+            // to zoom or separate into new vertical rows.
+            for (const child of bottom) {
+              child.min = child.natural
+              child.want = Math.max(child.min, child.want)
+            }
+            const group = { el:null, horizontal:true, kids:bottom, mt:0, mb:0, overhead:0,
+              min:Math.max(...bottom.map(child => child.min)), want:Math.max(...bottom.map(child => child.want)),
+              active:bottom.some(child => child.active), hasAccount:true }
+            kids = [...kids.filter(child => !bottom.includes(child)), group]
+          }
+        }
         const mt = number(cs.marginTop), mb = number(cs.marginBottom)
-        const node = { el, key, natural, kids, mt, mb, active: el === activeRow || !!activeRow && el.contains(activeRow) }
+        const node = { el, key, natural, kids, mt, mb, sharedFooter, hasAccount:el.contains(accountEl), active: el === activeRow || !!activeRow && el.contains(activeRow) }
+        for (const child of kids) {
+          child.parent = node
+          if (child.horizontal) for (const item of child.kids) item.parent = child
+        }
         if (kids.length) {
           // Padding/borders/gaps, not the container's blank or auto-margin space.
           node.overhead = number(cs.paddingTop) + number(cs.paddingBottom) + number(cs.borderTopWidth) + number(cs.borderBottomWidth)
@@ -597,6 +627,13 @@ window.__ModuleLoader__.load({
         height = Math.max(node.min, height)
         node.actual = height
         const { el, kids } = node
+        if (node.horizontal) {
+          kids.forEach(child => sizeNode(child, Math.max(child.min, Math.min(height, child.want))))
+          // This virtual row has no box of its own. Count only its rendered
+          // controls so the footer can reuse the empty grid track above them.
+          node.actual = Math.max(...kids.map(child => child.actual + child.mt + child.mb))
+          return
+        }
         const scale = kids.length ? 1 : Math.min(1, height / node.natural)
         layoutStyle(el, 'box-sizing', 'border-box')
         layoutStyle(el, 'min-height', '0px')
@@ -628,9 +665,28 @@ window.__ModuleLoader__.load({
           const childSizes = distribute(kids, height - node.overhead, child => child.active)
           const spare = Math.max(0, height - node.overhead - childSizes.reduce((sum, size) => sum + size, 0))
           const last = kids[kids.length - 1]
-          if (spare > 0 && last.el.contains(accountEl) && last.kids.length) childSizes[childSizes.length - 1] += spare
+          if (spare > 0 && last.hasAccount && last.kids.length) childSizes[childSizes.length - 1] += spare
           kids.forEach((child, i) => sizeNode(child, childSizes[i]))
-          if (spare > 0 && last.el.contains(accountEl) && !last.kids.length) layoutStyle(last.el, 'margin-top', 'auto')
+          if (spare > 0 && last.hasAccount && !last.kids.length) layoutStyle(last.el, 'margin-top', 'auto')
+          if (node.sharedFooter && last.horizontal) {
+            // A grid models actual visual rows across transparent slot hosts,
+            // retaining React ownership and the native final account/icon row.
+            layoutStyle(el, 'display', 'grid')
+            layoutStyle(el, 'grid-template-columns', ['minmax(0, 1fr)', ...last.kids.slice(1).map(() => 'max-content')].join(' '))
+            layoutStyle(el, 'grid-template-rows', [...childSizes.slice(0, -1).map((size, i) => (size + kids[i].mt + kids[i].mb) + 'px'), 'minmax(0, 1fr)'].join(' '))
+            kids.slice(0, -1).forEach((child, i) => {
+              layoutStyle(child.el, 'grid-column', '1 / -1')
+              layoutStyle(child.el, 'grid-row', String(i + 1))
+              layoutStyle(child.el, 'width', '100%')
+              layoutStyle(child.el, 'align-self', 'start')
+            })
+            last.kids.forEach((child, i) => {
+              layoutStyle(child.el, 'grid-column', String(i + 1))
+              layoutStyle(child.el, 'grid-row', String(kids.length))
+              layoutStyle(child.el, 'align-self', 'end')
+              layoutStyle(child.el, 'min-width', '0px')
+            })
+          }
         }
       }
       nodes.forEach((node, i) => {
@@ -1002,17 +1058,17 @@ window.__ModuleLoader__.load({
         // 穿透纯包裹层：宿主很多容器只有 1 个子元素，真正的一排在更里面。
         let node = container
         for (let guard = 0; guard < 4; guard += 1) {
-          const kids = Array.from(node.children).filter((child) => !ownNode(child))
+          const kids = boxChildren(node)
           if (kids.length !== 1) break
           const inner = kids[0]
           if (!inner || (inner.children && inner.children.length === 0)) break
           node = inner
         }
         if (!isRowContainer(node)) return
-        const rows = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
+        const rows = boxChildren(node).filter(child => child !== accountEl)
         if (rows.length) scopes.push({ id, container: node, rows })
         if (depth >= 3) return
-        const kids = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
+        const kids = boxChildren(node).filter(child => child !== accountEl)
         for (let i = 0; i < kids.length; i += 1) {
           const child = kids[i]
           if (!child.children || !child.children.length) continue
@@ -1021,10 +1077,10 @@ window.__ModuleLoader__.load({
       }
       if (panes.nav) collect(panes.nav, 'nav', 0)
       if (panes.foot) {
-        const rows = Array.from(panes.foot.children).filter(child => !ownNode(child) && child !== accountEl)
+        const rows = boxChildren(panes.foot).filter(child => child !== accountEl)
         if (rows.length) scopes.push({ id: 'foot', container: panes.foot, rows })
         let index = 0
-        for (const child of panes.foot.children) {
+        for (const child of boxChildren(panes.foot)) {
           if (ownNode(child)) continue
           collect(child, 'foot' + index, 0)
           index += 1
@@ -1191,8 +1247,7 @@ window.__ModuleLoader__.load({
       const overhead = parent.min - (node?.min || h0)
       const available = layoutBudget - minimumOthers - overhead
       const ancestors = []
-      for (let el = row.parentElement; el && parent.el.contains(el); el = el.parentElement) {
-        const branch = layoutNodes.get(el)
+      for (let branch = node?.parent; branch; branch = branch.parent) {
         if (branch?.kids.length) {
           const pane = branch === parent
           ancestors.push({
@@ -1203,7 +1258,7 @@ window.__ModuleLoader__.load({
             slack: Math.max(0, branch.actual - branch.overhead - branch.kids.reduce((sum, child) => sum + child.actual, 0)),
           })
         }
-        if (el === parent.el) break
+        if (branch === parent) break
       }
       priorityPane = parent.id
       priorityRow = row
@@ -1746,7 +1801,7 @@ window.__ModuleLoader__.load({
           id: scope.id,
           rows: scope.rows.map((r) => {
             const cs = window.getComputedStyle(r)
-            return { text: String(r.textContent || '').trim().slice(0, 24), rect: rect(r), h: cs.height, mt: cs.marginTop, icon: isIconOnly(r) }
+            return { text: String(r.textContent || '').trim().slice(0, 24), rect: rect(r), h: cs.height, mt: cs.marginTop }
           })
         }))
         dump.sashCount = (ui.sashes ? Object.keys(ui.sashes).length : 0)
