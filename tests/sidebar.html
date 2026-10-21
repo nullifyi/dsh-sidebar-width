@@ -1,0 +1,51 @@
+<!doctype html>
+<meta charset="utf-8">
+<style>
+  * { box-sizing: border-box }
+  html, body { margin: 0; height: 100%; font: 14px/1.4 sans-serif }
+  .host_root { width: 268px; height: 100%; padding: 6px 12px; display: flex; flex-direction: column; background: #f3f5fa }
+  .host_logoRow { height: 40px; flex: none; display: flex; align-items: center; overflow: hidden }
+  .host_newSession { height: 38px; flex: none; margin: 8px 0 12px; padding: 8px 12px; font: 14px/22px sans-serif }
+  .host_panelList { flex: none; display: flex; flex-direction: column; gap: 4px; margin-bottom: 8px }
+  .host_panelRow { min-height: 36px; padding: 7px 8px; border: 0; font: 14px/22px sans-serif; display: flex; align-items: center; gap: 8px }
+  .host_regionArea { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column }
+  .workspace { overflow: auto; min-height: 0; flex: 1 }
+  .workspace div { height: 32px; white-space: nowrap }
+  .host_footArea, .settings, .actions { flex: none; display: flex; flex-direction: column; min-height: 0 }
+  .usage { flex: none; margin-bottom: 8px; border: 1px solid #ccd2df; border-radius: 8px; padding: 10px; font: 12px/20px sans-serif }
+  .usage .line { display: flex; justify-content: space-between; font-size: 12px; line-height: 20px }
+  .remote, .status { flex: none; display: flex; align-items: center; height: 36px; font-size: 13px; padding: 6px 8px }
+  .account { display: flex; flex: none; align-items: center; gap: 8px; height: 44px; padding: 0 8px; font-size: 14px }
+  .avatar { display: block; width: 32px; height: 32px; border-radius: 50%; background: #7a91a4 }
+</style>
+<div id="root" class="host_root">
+  <div id="brand" class="host_logoRow"><b>deepseek HARNESS</b></div>
+  <button id="new" class="host_newSession">＋ 新会话</button>
+  <nav id="nav" class="host_panelList">
+    <button class="host_panelRow">✥ 插件</button>
+    <button class="host_panelRow">◷ 自动化任务</button>
+    <button class="host_panelRow">▤ 任务看板</button>
+  </nav>
+  <div id="main" class="host_regionArea"><div>工作区</div><div class="workspace"><div>daily</div><div>插件安装</div><div>harness</div></div></div>
+  <div id="foot" class="host_footArea">
+    <div class="settings">
+      <div id="usage" class="usage">
+        <div class="line"><span>今日 75.9M tokens</span><b>¥3.5381</b></div>
+        <div class="line"><span>余额</span><span>¥89.0946</span></div>
+        <div class="line"><span>平台 剩余1时3分</span><span>09:00 转临时</span></div>
+      </div>
+      <div id="remote" class="remote">▣ 远程控制</div>
+      <div id="status" class="status">DeepSeek API　空闲　¥3.53</div>
+      <div id="account" class="account"><span class="avatar"></span><span>chzm</span></div>
+    </div>
+  </div>
+</div>
+<script>
+  window.__ModuleLoader__ = { load(mod) { window.plugin = mod.factory(() => ({
+    createElement() {}, useState() { return [null, () => {}] }, Fragment: 'f',
+  })) } }
+  window.start = (saved) => {
+    if (saved) localStorage.setItem('dsh-sidebar-sections:v5', JSON.stringify(saved))
+    window.plugin.apply({ effect(fn) { window.dispose = fn() }, settings: { register() {} } })
+  }
+</script>
