@@ -13,7 +13,7 @@
 - [x] In `client.js`, derive pane/row drag ceilings from actual sibling allocations. Preserve sibling allocations across release. Cap whole-card magnification and fit text without vertical/horizontal loss; clamp oversized old card requests during rendering rather than deleting user state.
 - [x] Enable main-pane scrolling without replacing a host's existing nested scrollers. Verify wheel reachability of the last item.
 - [x] Run all Edge/Chrome tests, then independent read-only review and recording-shaped repeated-gesture tests. Inspect compact/expanded screenshots.
-- [ ] Update version/docs, commit and push code plus market index; verify remote SHA and clean tree. Report fixture validation separately from real-host acceptance.
+- [x] Update version/docs, commit and push code plus market index; verify remote SHA and clean tree. Report fixture validation separately from real-host acceptance.
 
 ## Evidence
 
@@ -23,3 +23,4 @@
 - Explicit gestures adopt rendered sibling allocations, but viewport resize alone does not modify saved requests. Host DOM is not reparented; reversible style ownership is retained.
 - Edge: 37/37 passed. Chrome: 37/37 passed. Syntax checks and version consistency passed for 0.6.23. Independent read-only Edge review found no unresolved Critical/Important issues.
 - These are real-browser fixture checks, not a claim that the running DSH host was restarted or accepted. No host archive, profile, credential or other plugin was changed.
+- Release 0.6.23: code `bc3a9dd15fbc3289f32734e49729a6168e5f296b`; market entry `5ea9251`. Both pushed to `origin/main`; index source pins the code SHA. Remote branch SHA and clean working tree were checked after publishing.
