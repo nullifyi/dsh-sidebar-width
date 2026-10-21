@@ -1,6 +1,6 @@
 {
   "name": "dsh-sidebar-width",
-  "version": "0.6.19",
+  "version": "0.6.20",
   "description": "DeepSeek Harness plugin: VS Code style sash dividers in the left sidebar, coordinate-hit row seams (no overlay elements, no stray lines), content that scales down instead of clipping, an avatar row that stays pinned and never scales, and per-block collapse into icons above the avatar.",
   "license": "MIT",
   "type": "module",

@@ -28,6 +28,28 @@ async function dragSash(page, name, dy) {
   const r = await box(page, `[data-dsh-sw-sash="${name}"]`)
   await drag(page, r.x + r.width / 2, r.y + r.height / 2, dy)
 }
+
+async function nativeFooter(page, backgroundAvatar = false) {
+  await page.evaluate(backgroundAvatar => {
+    const settings = document.querySelector('.settings')
+    // The actual shell has a flex footer.action slot and a plain block
+    // settings slot, not the fixture's all-column flex wrappers.
+    settings.className = 'host_settingsArea'
+    const actions = document.createElement('div')
+    actions.className = 'host_footerActions'
+    actions.style.cssText = 'display:flex;flex:none'
+    const stack = document.createElement('div')
+    stack.style.width = '100%'
+    stack.append(document.querySelector('#usage'), document.querySelector('#remote'))
+    actions.append(stack)
+    settings.before(actions)
+    if (backgroundAvatar) {
+      const avatar = document.querySelector('.avatar')
+      avatar.className = 'profile-picture'
+      avatar.style.cssText = 'display:block;width:32px;height:32px;background:#7a91a4;border-radius:50%'
+    }
+  }, backgroundAvatar)
+}
 async function noOverlap(page) {
   await expect(page.locator('html')).not.toHaveAttribute('data-dsh-sw-fault', /.+/)
   const names = ['brand', 'new', 'nav', 'main', 'foot']
@@ -41,6 +63,8 @@ async function noOverlap(page) {
     const r = await box(page, '#' + id)
     expect(r.y).toBeGreaterThanOrEqual(foot.y - 1)
     expect(r.y + r.height).toBeLessThanOrEqual(foot.y + foot.height + 1)
+    expect(r.x).toBeGreaterThanOrEqual(foot.x - 1)
+    expect(r.x + r.width).toBeLessThanOrEqual(foot.x + foot.width + 1)
   }
   const usage = await box(page, '#usage')
   const lastLine = await box(page, '#usage .line:last-child')
@@ -357,4 +381,48 @@ test('account plus horizontal action buttons cannot be shrunk by ancestor zoom',
   expect((await box(page, '.avatar')).height).toBeCloseTo(before.height, 1)
   expect((await box(page, '.avatar')).width).toBeCloseTo(before.width, 1)
   await noOverlap(page)
+})
+
+test('native block slots expose independently compressible usage rows', async ({ page }) => {
+  await boot(page, undefined, page => nativeFooter(page))
+  const usage = await box(page, '#usage')
+  const remote = await box(page, '#remote')
+  const account = await box(page, '#account')
+  await drag(page, usage.x + 90, usage.y + usage.height - 1, -28)
+  expect((await box(page, '#usage')).height).toBeCloseTo(usage.height - 28, 0)
+  expect((await box(page, '#remote')).height).toBeCloseTo(remote.height, 0)
+  expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
+  await noOverlap(page)
+})
+
+test('background avatar fallback reserves only the account row, not the preceding status', async ({ page }) => {
+  await boot(page, { mode: 'keep', heights: { foot: 340 }, rows: {}, hidden: [] }, page => nativeFooter(page, true))
+  const status = await box(page, '#status')
+  const account = await box(page, '#account')
+  await drag(page, status.x + 90, status.y + status.height, 25)
+  expect((await box(page, '#status')).height).toBeCloseTo(status.height + 25, 0)
+  expect((await box(page, '#account')).height).toBeCloseTo(account.height, 0)
+  expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
+  await noOverlap(page)
+})
+
+test('row hover and dragging show only an in-sidebar grip with no floating text', async ({ page }) => {
+  await boot(page, undefined, page => page.evaluate(() => {
+    document.querySelector('#root').style.cssText = 'margin:30px 0 0 48px;height:calc(100% - 30px)'
+  }))
+  const usage = await box(page, '#usage')
+  const root = await box(page, '#root')
+  await page.mouse.move(usage.x + 90, usage.y + usage.height - 1)
+  const grip = page.locator('[data-dsh-sw-rowhint]')
+  await expect(grip).toBeVisible()
+  await expect(grip).toHaveText('')
+  const r = await grip.boundingBox()
+  expect(r.x + r.width).toBeLessThan(root.x + root.width)
+  expect(r.x + r.width / 2).toBeCloseTo(root.x + root.width / 2, 0)
+  expect(r.y).toBeCloseTo(usage.y + usage.height, 0)
+  await page.mouse.down()
+  await page.mouse.move(usage.x + 90, usage.y + usage.height - 20, { steps: 5 })
+  await expect(grip).toHaveText('')
+  await page.mouse.up()
+  expect((await box(page, '#usage')).height).toBeLessThan(usage.height - 10)
 })

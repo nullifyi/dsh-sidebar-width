@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.19'
+    const PLUGIN_VERSION = '0.6.20'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -71,7 +71,6 @@ window.__ModuleLoader__.load({
     const ATTR_ROW = 'data-dsh-sw-row'
     const ATTR_RSASH = 'data-dsh-sw-rsash'
     const ATTR_ROW_HINT = 'data-dsh-sw-rowhint'
-    const ATTR_ROW_LABEL = 'data-dsh-sw-rowlabel'
     const ATTR_SEAM = 'data-dsh-sw-seam'
     const ATTR_DRAGGING = 'data-dsh-sw-dragging'
     const ATTR_ROWSPACE = 'data-dsh-sw-rowspace'
@@ -203,8 +202,6 @@ window.__ModuleLoader__.load({
    默认只显示一个小握把，鼠标移上去才浮现，不挡点击（热区 7px 落在行间缝里）。 */
 [${ATTR_ROW_HINT}]{position:absolute;left:50%;width:26px;height:3px;margin-left:-13px;border-radius:2px;
   background:var(--dsw-alias-brand-primary,#4d6bfe);pointer-events:none;z-index:9;display:none}
-[${ATTR_ROW_HINT}]>span{position:absolute;left:20px;top:-6px;font-size:10px;line-height:14px;padding:1px 6px;
-  border-radius:4px;color:#fff;background:var(--dsw-alias-brand-primary,#4d6bfe);white-space:nowrap}
 [${ATTR_SEAM}],[${ATTR_DRAGGING}]{cursor:row-resize}
 [${ATTR_SEAM}] *,[${ATTR_DRAGGING}]*{cursor:row-resize!important}
 [${ATTR_DRAGGING}]{user-select:none}
@@ -615,7 +612,10 @@ window.__ModuleLoader__.load({
           layoutStyle(el, 'zoom', String(scale))
           const cs = window.getComputedStyle(el)
           const horizontalMargins = number(cs.marginLeft) + number(cs.marginRight)
-          layoutStyle(el, 'width', `calc((100% - ${horizontalMargins}px) / ${scale})`)
+          // Percentage widths already resolve against the zoom-adjusted
+          // containing block. Dividing again would push the right-hand text
+          // outside the sidebar and hide it behind an ancestor's overflow.
+          layoutStyle(el, 'width', `calc(100% - ${horizontalMargins}px)`)
           layoutStyle(el, 'max-width', 'none')
           layoutStyle(el, 'margin-top', node.mt / scale + 'px')
           layoutStyle(el, 'margin-bottom', node.mb / scale + 'px')
@@ -986,11 +986,15 @@ window.__ModuleLoader__.load({
     function rowScopes(panes) {
       const scopes = []
       const seen = new Set()
-      const flowOf = (el) => {
+      const isRowContainer = (el) => {
         try {
           const cs = window.getComputedStyle(el)
-          return cs && typeof cs.flexDirection === 'string' ? cs.flexDirection : ''
-        } catch (error) { return '' }
+          if (cs.display === 'flex' || cs.display === 'inline-flex') return !cs.flexDirection.startsWith('row')
+          // Plain host wrappers are vertical even though their computed
+          // flexDirection defaults to "row". A padded/framed content card,
+          // however, is one resizable unit, not a group of text-line seams.
+          return !['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].some(prop => parseFloat(cs[prop]) > 0)
+        } catch (error) { return false }
       }
       const collect = (container, id, depth) => {
         if (!container || depth > 3 || seen.has(container)) return
@@ -1004,11 +1008,9 @@ window.__ModuleLoader__.load({
           if (!inner || (inner.children && inner.children.length === 0)) break
           node = inner
         }
+        if (!isRowContainer(node)) return
         const rows = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
-        if (rows.length) {
-          const flow = flowOf(node)
-          if (!(flow === 'row' || flow === 'row-reverse')) scopes.push({ id, container: node, rows })
-        }
+        if (rows.length) scopes.push({ id, container: node, rows })
         if (depth >= 3) return
         const kids = Array.from(node.children).filter((child) => !ownNode(child) && child !== accountEl)
         for (let i = 0; i < kids.length; i += 1) {
@@ -1128,18 +1130,6 @@ window.__ModuleLoader__.load({
       return best
     }
 
-    function rowLabelOf(seam) {
-      if (String(seam.key).indexOf('acct:') === 0) return '账号与头像'
-      const row = seam.row
-      let text = ''
-      try {
-        text = (row.getAttribute('aria-label') || row.textContent || '').replace(/\s+/g, ' ').trim()
-      } catch (error) { text = '' }
-      if (!text) text = '这一行'
-      if (text.length > 14) text = text.slice(0, 14) + '…'
-      return text
-    }
-
     let hintTimer = 0
 
     function ensureRowHint(gutter) {
@@ -1148,9 +1138,6 @@ window.__ModuleLoader__.load({
       hint = document.createElement('div')
       hint.setAttribute(ATTR_ROW_HINT, '')
       hint.setAttribute('aria-hidden', 'true')
-      const label = document.createElement('span')
-      label.setAttribute(ATTR_ROW_LABEL, '')
-      hint.appendChild(label)
       try { gutter.appendChild(hint) } catch (error) { return null }
       ui.rowHint = hint
       return hint
@@ -1164,12 +1151,6 @@ window.__ModuleLoader__.load({
       const rootRect = root.getBoundingClientRect()
       writeStyle(hint, 'top', Math.round(seam.y - rootRect.top) + 'px')
       writeStyle(hint, 'display', 'block')
-      const label = hint.querySelector('[' + ATTR_ROW_LABEL + ']')
-      if (label) {
-        const rowRect = seam.row ? seam.row.getBoundingClientRect() : null
-        const height = rowRect ? Math.round(rowRect.height) : 0
-        writeText(label, 'textContent', '↑↓ 拖动调整 · ' + rowLabelOf(seam) + (height ? ' · ' + height + 'px' : ''))
-      }
       if (root.getAttribute(ATTR_SEAM) !== '1') root.setAttribute(ATTR_SEAM, '1')
       ui.rowSeam = seam
       // 兜底：指针离开/滚轮/失焦时事件可能不来，2.5 秒没动静就自己收起来。
@@ -1446,11 +1427,25 @@ window.__ModuleLoader__.load({
         }
         if (!kids.length) break
         const candidate = kids[kids.length - 1]
-        if (candidate.getBoundingClientRect().height <= 96) { last = candidate; break }
         last = candidate
+        // A short vertical wrapper can still hold status + account. Only
+        // stop at an actual row/leaf, not at the first wrapper below 96px.
+        if (candidate.getBoundingClientRect().height <= 96 && accountRowLike(candidate)) break
         node = candidate
       }
       return last
+    }
+
+    function accountRowLike(node) {
+      const kids = Array.from(node.children).filter(child => !ownNode(child) && child.getBoundingClientRect().height > 1)
+      if (!kids.length || node.matches('button, a, [role="button"]')) return true
+      const cs = window.getComputedStyle(node)
+      if ((cs.display === 'flex' || cs.display === 'inline-flex') && cs.flexDirection.startsWith('row')) return true
+      if (kids.length < 2) return false
+      // Non-flex avatar/name rows can use inline or grid layout. Their
+      // children share a vertical band; stacked status/account rows do not.
+      const rects = kids.map(child => child.getBoundingClientRect())
+      return Math.max(...rects.map(rect => rect.top)) < Math.min(...rects.map(rect => rect.bottom))
     }
 
     function accountRow(panes) {
@@ -1463,11 +1458,10 @@ window.__ModuleLoader__.load({
       let node = avatar
       while (node && node !== root) {
         const rect = node.getBoundingClientRect()
-        const cs = window.getComputedStyle(node)
         // Find the actual horizontal avatar/name row, not whichever wrapper
         // happens to be a direct child of footArea in this host version.
         if (node !== avatar && rect.height >= avatarRect.height && rect.height <= 96
-          && (cs.display === 'flex' && cs.flexDirection.startsWith('row') || String(node.textContent || '').trim())) return node
+          && accountRowLike(node)) return node
         node = node.parentElement
       }
       return guessAccountRow(panes)
@@ -1866,6 +1860,9 @@ window.__ModuleLoader__.load({
         lastSig = sig
 
         restoreLayout()
+        // The overlay must be positioned against the sidebar, not the first
+        // positioned ancestor (which can be the whole conversation window).
+        if (window.getComputedStyle(root).position === 'static') layoutStyle(root, 'position', 'relative')
         markBlocks(panes)
         accountEl = accountRow(panes)
         applyCollapse(panes)
