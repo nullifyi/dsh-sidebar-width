@@ -52,7 +52,7 @@
         "order": "desc"
       }
     },
-    "updatedAt": "2026-10-20T16:16:48Z"
+    "updatedAt": "2026-10-21T00:28:26Z"
   },
   "plugins": [
     {
@@ -92,10 +92,19 @@
           "chinese"
         ],
         "sortKeys": {
-          "updated": 1792508410
+          "updated": 1792542506
         }
       },
       "versions": [
+        {
+          "version": "0.6.19",
+          "publishTimestamp": 1792542506,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/nullifyi/dsh-sidebar-width",
+            "commit": "74ec45b3b824af813439f1b066907036aa877e0b"
+          }
+        },
         {
           "version": "0.6.18",
           "publishTimestamp": 1792519652,
