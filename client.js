@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.22'
+    const PLUGIN_VERSION = '0.6.23'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -89,6 +89,9 @@ window.__ModuleLoader__.load({
     const MIN_MAIN = 96
     /** 内容超过分配高度时，最多缩到原尺寸的 42%（字号 14 → 5.9，仍可见）。 */
     const MIN_FIT = 0.42
+    // A card is content, not an empty spacer: magnify the whole unit, bounded
+    // to twice its native size. Pane slack belongs above the account instead.
+    const MAX_FIT = 2
     /** 单行最低高度：再低就点不到这一行里的东西了。 */
     const MIN_ROW = 18
     /** 账号/头像行的独立键与最低高度：它是单独一个可调单元，不跟上一块联动。 */
@@ -591,7 +594,7 @@ window.__ModuleLoader__.load({
           }
         }
         const mt = number(cs.marginTop), mb = number(cs.marginBottom)
-        const node = { el, key, natural, kids, mt, mb, sharedFooter, hasAccount:el.contains(accountEl), active: el === activeRow || !!activeRow && el.contains(activeRow) }
+        const node = { el, key, natural, width:rect.width, kids, mt, mb, sharedFooter, hasAccount:el.contains(accountEl), active: el === activeRow || !!activeRow && el.contains(activeRow) }
         for (const child of kids) {
           child.parent = node
           if (child.horizontal) for (const item of child.kids) item.parent = child
@@ -609,6 +612,7 @@ window.__ModuleLoader__.load({
           node.want = natural
         }
         if (key && rowSaved(key) !== null) node.want = Math.max(node.min, rowSaved(key))
+        if (!kids.length && !node.hasAccount) node.want = Math.min(node.want, natural * MAX_FIT)
         if (key) rowNatCache.set(el, natural)
         layoutNodes.set(el, node)
         return node
@@ -633,9 +637,14 @@ window.__ModuleLoader__.load({
       const budget = Math.max(0, contentBoxHeight(root) - margins - rootGap - (main ? MIN_MAIN : 0))
       layoutBudget = budget
       const activePane = drag ? (drag.kind === 'row' ? nodes.find(node => node.el.contains(drag.row))?.id : drag.target) : priorityPane
-      const sizes = distribute(nodes, budget, node => node.id === activePane)
+      // An oversized saved footer is not permission to crush the logo/buttons
+      // on startup either. Reclaim the requested/active pane first; only a truly
+      // undersized viewport may force the remaining panes toward their minima.
+      const sizes = distribute(nodes, budget, node => node.id !== (activePane || 'foot'))
+      const magnified = []
       const sizeNode = (node, height) => {
         height = Math.max(node.min, height)
+        if (!node.kids.length && !node.hasAccount) height = Math.min(height, node.natural * MAX_FIT)
         node.actual = height
         const { el, kids } = node
         if (node.horizontal) {
@@ -645,16 +654,21 @@ window.__ModuleLoader__.load({
           node.actual = Math.max(...kids.map(child => child.actual + child.mt + child.mb))
           return
         }
-        const scale = kids.length ? 1 : Math.min(1, height / node.natural)
+        const scale = kids.length || node.hasAccount ? 1 : height / node.natural
         layoutStyle(el, 'box-sizing', 'border-box')
         layoutStyle(el, 'min-height', '0px')
         layoutStyle(el, 'max-height', 'none')
         layoutStyle(el, 'flex-grow', '0')
         layoutStyle(el, 'flex-shrink', '0')
+        if (scale > 1) {
+          // Fit only after ancestor grids have their final columns; intrinsic
+          // wrapping measured in the temporary native flex layout is different.
+          magnified.push({ node, height, scale })
+        }
         layoutStyle(el, 'height', height / scale + 'px')
         layoutStyle(el, 'flex-basis', height / scale + 'px')
         layoutStyle(el, 'overflow', 'hidden')
-        if (scale < .9999) {
+        if (Math.abs(scale - 1) > .0001) {
           // Zoom the complete row, not individual flex children: explicit fonts,
           // padding, icons and gaps shrink together, without reordering React DOM.
           layoutStyle(el, 'zoom', String(scale))
@@ -663,7 +677,7 @@ window.__ModuleLoader__.load({
           // Percentage widths already resolve against the zoom-adjusted
           // containing block. Dividing again would push the right-hand text
           // outside the sidebar and hide it behind an ancestor's overflow.
-          layoutStyle(el, 'width', `calc(100% - ${horizontalMargins}px)`)
+          layoutStyle(el, 'width', scale > 1 ? node.width / scale + 'px' : `calc(100% - ${horizontalMargins}px)`)
           layoutStyle(el, 'max-width', 'none')
           layoutStyle(el, 'margin-top', node.mt / scale + 'px')
           layoutStyle(el, 'margin-bottom', node.mb / scale + 'px')
@@ -704,12 +718,46 @@ window.__ModuleLoader__.load({
         sizeNode(node, sizes[i])
         node.el.setAttribute(ATTR_PANE, node.id)
       })
+      for (const {node, height, scale: desiredScale} of magnified) {
+        const el = node.el
+        const width = el.getBoundingClientRect().width
+        layoutStyle(el, 'height', 'auto')
+        layoutStyle(el, 'flex-basis', 'auto')
+        const measure = candidate => {
+          layoutStyle(el, 'zoom', String(candidate))
+          layoutStyle(el, 'width', width / candidate + 'px')
+          const cs = window.getComputedStyle(el)
+          return Math.max(el.getBoundingClientRect().height,
+            (el.scrollHeight + number(cs.borderTopWidth) + number(cs.borderBottomWidth)) * candidate)
+        }
+        const fits = candidate => measure(candidate) <= height + .25 && el.scrollWidth <= el.clientWidth + 1
+        let scale = desiredScale
+        if (!fits(scale)) {
+          let low = 1, high = scale
+          for (let i = 0; i < 12; i += 1) {
+            const middle = (low + high) / 2
+            if (fits(middle)) low = middle
+            else high = middle
+          }
+          scale = low
+        }
+        // At a wrap threshold no continuous magnification exactly fills the
+        // requested height. Leave the remainder outside the card, not in a
+        // giant empty bordered box, and never hide wrapped text.
+        const fittedHeight = Math.min(height, Math.max(node.natural * scale, measure(scale)))
+        layoutStyle(el, 'height', fittedHeight / scale + 'px')
+        layoutStyle(el, 'flex-basis', fittedHeight / scale + 'px')
+        layoutStyle(el, 'margin-top', node.mt / scale + 'px')
+        layoutStyle(el, 'margin-bottom', node.mb / scale + 'px')
+        el.setAttribute(ATTR_ZOOM, String(scale))
+        node.actual = fittedHeight
+      }
       if (main) {
         layoutStyle(main, 'flex-grow', '1')
         layoutStyle(main, 'flex-shrink', '0')
         layoutStyle(main, 'flex-basis', '0px')
         layoutStyle(main, 'min-height', MIN_MAIN + 'px')
-        layoutStyle(main, 'overflow', 'hidden')
+        layoutStyle(main, 'overflow', 'auto')
         main.setAttribute(ATTR_PANE, 'main')
       }
       // Flex main consumes free space. When it is collapsed, keep footer at bottom.
@@ -858,6 +906,15 @@ window.__ModuleLoader__.load({
 
     let drag = null
 
+    function renderedPaneRequests() {
+      const heights = { ...state.heights }
+      // An explicit gesture adopts what is visible now. Do not let an old
+      // oversized request re-expand a sibling while another pane is resized.
+      // Window resizes alone still never overwrite stored requests.
+      for (const [id, node] of layoutPanes) heights[id] = node.actual
+      return heights
+    }
+
     function onSashDown(event, sashId) {
       if (!listening || drag) return
       if (event.pointerType === 'mouse' && typeof event.button === 'number' && event.button !== 0) return
@@ -881,8 +938,8 @@ window.__ModuleLoader__.load({
       const native = layoutPanes.get(target)?.natural || heights[target] || 18
 
       // 可增长的上限：内容高度 − 主区下限 − 其它固定块的当前高度。
-      const minimumOthers = fixed.filter(id => id !== target).reduce((sum, id) => sum + (layoutPanes.get(id)?.min || heights[id]), 0)
-      const max = Math.max(heights[target], layoutBudget - minimumOthers)
+      const occupiedOthers = fixed.filter(id => id !== target).reduce((sum, id) => sum + heights[id], 0)
+      const max = Math.max(heights[target], layoutBudget - occupiedOthers)
       // main|foot 这条分界反向：往上拖 = foot 变高。
       const inverted = spec ? spec.inverted : sashId === 'foot'
 
@@ -910,6 +967,7 @@ window.__ModuleLoader__.load({
         natural: native,
         min: layoutPanes.get(target)?.min || paneMin(target, native),
         max,
+        paneHeights: renderedPaneRequests(),
         h: heights[target] || native,
       }
       priorityPane = target
@@ -925,7 +983,7 @@ window.__ModuleLoader__.load({
     /** 某块能长到多高：内容高度 − 主区下限 − 其它固定块。 */
     function contentHMax(target) {
       let others = 0
-      for (const [key, node] of layoutPanes) if (key !== target) others += node.min
+      for (const [key, node] of layoutPanes) if (key !== target) others += node.actual
       return Math.max(layoutPanes.get(target)?.min || MIN_PANE[target] || 22, layoutBudget - others)
     }
 
@@ -958,8 +1016,8 @@ window.__ModuleLoader__.load({
       drag.h = h
       drag.moved = true
       if (drag.kind === 'row') {
-        const rows = { ...rowOverrides(), [drag.key]: h }
-        const heights = { ...state.heights }
+        const rows = { ...drag.rowRequests, [drag.key]: h }
+        const heights = { ...drag.paneHeights }
         let growth = h - drag.h0
         // Follow the entire branch, not only the outer pane: a saved intermediate
         // group would otherwise trap the child and compress its siblings instead.
@@ -974,7 +1032,7 @@ window.__ModuleLoader__.load({
         }
         state = { ...state, rows, heights }
       } else {
-        state = { ...state, heights: { ...state.heights, [drag.target]: h } }
+        state = { ...state, heights: { ...drag.paneHeights, [drag.target]: h } }
       }
       schedule()
     }
@@ -1077,6 +1135,11 @@ window.__ModuleLoader__.load({
           if (kids.length !== 1) break
           const inner = kids[0]
           if (!inner || (inner.children && inner.children.length === 0)) break
+          // Stop AT the wrapper around an atomic card, not inside the card.
+          // Otherwise a one-card slot loses the card's lower-edge handle (the
+          // wrapper's bottom may be separated by the card's external margin).
+          const innerStyle = window.getComputedStyle(inner)
+          if (['paddingTop', 'paddingBottom', 'borderTopWidth', 'borderBottomWidth'].some(prop => parseFloat(innerStyle[prop]) > 0)) break
           node = inner
         }
         if (!isRowContainer(node)) return
@@ -1258,12 +1321,17 @@ window.__ModuleLoader__.load({
       const parent = Array.from(layoutPanes.values()).find(node => node.el.contains(row))
       if (!parent) return
       const node = layoutNodes.get(row)
-      const minimumOthers = Array.from(layoutPanes.values()).filter(other => other !== parent).reduce((sum, other) => sum + other.min, 0)
-      const overhead = parent.min - (node?.min || h0)
-      const available = layoutBudget - minimumOthers - overhead
+      const occupiedOthers = Array.from(layoutPanes.values()).filter(other => other !== parent).reduce((sum, other) => sum + other.actual, 0)
+      const overhead = parent.actual - h0
+      const available = layoutBudget - occupiedOthers - overhead
       const ancestors = []
+      const rowRequests = { ...rowOverrides() }
+      let childBranch = node
       for (let branch = node?.parent; branch; branch = branch.parent) {
         if (branch?.kids.length) {
+          for (const sibling of branch.kids) {
+            if (sibling !== childBranch && sibling.key && Math.abs(sibling.want - sibling.actual) > .5) rowRequests[sibling.key] = sibling.actual
+          }
           const pane = branch === parent
           ancestors.push({
             key: pane ? parent.id : branch.key,
@@ -1273,6 +1341,7 @@ window.__ModuleLoader__.load({
             slack: Math.max(0, branch.actual - branch.overhead - branch.kids.reduce((sum, child) => sum + child.actual, 0)),
           })
         }
+        childBranch = branch
         if (branch === parent) break
       }
       priorityPane = parent.id
@@ -1285,8 +1354,10 @@ window.__ModuleLoader__.load({
         h0,
         natural,
         min: node?.min || rowMin(seam.key),
-        max: Math.max(h0, available),
+        max: Math.min(Math.max(h0, available + ancestors.reduce((sum, ancestor) => sum + ancestor.slack, 0)), node && !node.kids.length && !node.hasAccount ? node.natural * MAX_FIT : Infinity),
         ancestors,
+        rowRequests,
+        paneHeights: renderedPaneRequests(),
         h: h0,
         started: false,
         moved: false,

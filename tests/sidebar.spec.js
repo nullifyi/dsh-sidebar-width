@@ -138,6 +138,115 @@ test('flex-column framed cards scale all text instead of resizing their internal
   await noOverlap(page)
 })
 
+test('recording: oversized footer drags never crush unrelated header or navigation', async ({ page }) => {
+  await page.setViewportSize({width:900, height:794})
+  await boot(page, undefined, boxedFooter)
+  const before = await Promise.all(['brand', 'new', 'nav'].map(id => box(page, '#' + id)))
+  await dragSash(page, 'foot', -650)
+  for (const [i, id] of ['brand', 'new', 'nav'].entries()) {
+    expect((await box(page, '#' + id)).height).toBeCloseTo(before[i].height, 0)
+  }
+  await sharedBounds(page)
+})
+
+test('recording: enlarging an atomic card enlarges its content, not just its empty box', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:568}, rows:{}, hidden:[]}, boxedFooter)
+  const before = await box(page, '#usage')
+  const line = await box(page, '#usage .line:first-child')
+  await drag(page, before.x + 90, before.y + before.height - 1, 50)
+  expect((await box(page, '#usage .line:first-child')).height).toBeGreaterThan(line.height * 1.2)
+  const enlarged = await box(page, '#usage')
+  const last = await box(page, '#usage .line:last-child')
+  expect(enlarged.y + enlarged.height - last.y - last.height).toBeLessThan(30)
+  await sharedBounds(page)
+})
+
+test('recording: workspace items remain reachable when native content cannot shrink', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:568}, rows:{}, hidden:[]}, async page => {
+    await boxedFooter(page)
+    await page.locator('.workspace').evaluate(el => {
+      el.style.cssText = 'flex:none;overflow:visible'
+      for (let i = 0; i < 30; i++) {
+        const item = document.createElement('div')
+        item.textContent = 'workspace item ' + i
+        el.append(item)
+      }
+    })
+  })
+  await page.locator('#main').hover()
+  await page.mouse.wheel(0, 2500)
+  await page.waitForTimeout(150)
+  const main = await box(page, '#main')
+  const last = await box(page, '.workspace > :last-child')
+  expect(last.y + last.height).toBeLessThanOrEqual(main.y + main.height + 1)
+  expect(last.y).toBeGreaterThanOrEqual(main.y - 1)
+  await sharedBounds(page)
+})
+
+test('recording: resizing an old oversized footer preserves rendered sibling sizes across release', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:2500,nav:220}, rows:{}, hidden:[]}, boxedFooter)
+  const siblings = ['brand','new','nav']
+  const initial = await Promise.all(siblings.map(id => box(page, '#' + id)))
+  expect(initial[0].height).toBeCloseTo(40, 0)
+  expect(initial[1].height).toBeCloseTo(38, 0)
+  expect(initial[2].height).toBeCloseTo(220, 0)
+  for (const amount of [30, 45, -20]) {
+    const sash = await box(page, '[data-dsh-sw-sash="foot"]')
+    await page.mouse.move(sash.x + sash.width / 2, sash.y + sash.height / 2)
+    await page.mouse.down()
+    await page.mouse.move(sash.x + sash.width / 2, sash.y + sash.height / 2 + amount, {steps:8})
+    await page.waitForTimeout(120)
+    const during = await box(page, '#foot')
+    await page.mouse.up()
+    await page.waitForTimeout(180)
+    expect((await box(page, '#foot')).height).toBeCloseTo(during.height, 0)
+    for (const [i, id] of siblings.entries()) expect((await box(page, '#' + id)).height).toBeCloseTo(initial[i].height, 0)
+    await sharedBounds(page)
+  }
+})
+
+test('recording: card magnification, reversal, reset and unload stay contained at narrow widths', async ({ page }, testInfo) => {
+  for (const width of [220, 268, 360]) {
+    await boot(page, {mode:'keep', heights:{foot:340}, rows:{}, hidden:[]}, async page => {
+      await boxedFooter(page)
+      await page.locator('#root').evaluate((el, width) => el.style.width = width + 'px', width)
+    })
+    const natural = await box(page, '#usage')
+    await drag(page, natural.x + 80, natural.y + natural.height - 1, 50)
+    const enlarged = await box(page, '#usage')
+    expect(enlarged.height).toBeGreaterThan(natural.height)
+    for (const text of await page.locator('#usage .line > *').all()) {
+      const r = await text.boundingBox()
+      expect(r.x).toBeGreaterThanOrEqual(enlarged.x - 1)
+      expect(r.x + r.width).toBeLessThanOrEqual(enlarged.x + enlarged.width + 1)
+      expect(r.y + r.height).toBeLessThanOrEqual(enlarged.y + enlarged.height + 1)
+    }
+    await sharedBounds(page)
+    if (width === 268) await page.screenshot({path:testInfo.outputPath('recording-expanded.png')})
+    await page.mouse.dblclick(enlarged.x + 80, enlarged.y + enlarged.height - 1)
+    await page.waitForTimeout(180)
+    expect((await box(page, '#usage')).height).toBeCloseTo(natural.height, 0)
+    const start = await box(page, '#usage')
+    const y = start.y + start.height - 1
+    await page.mouse.move(start.x + 80, y)
+    await page.mouse.down()
+    await page.mouse.move(start.x + 80, y + 150, {steps:8})
+    await page.waitForTimeout(120)
+    await sharedBounds(page)
+    await page.mouse.move(start.x + 80, y - 20, {steps:8})
+    await page.waitForTimeout(120)
+    const during = await box(page, '#usage')
+    expect(during.height).toBeCloseTo(start.height - 20, 0)
+    await page.mouse.up()
+    await page.waitForTimeout(180)
+    expect((await box(page, '#usage')).height).toBeCloseTo(during.height, 0)
+    await sharedBounds(page)
+    await page.evaluate(() => window.dispose())
+    expect((await box(page, '#usage')).height).toBeCloseTo(natural.height, 0)
+    expect(await page.locator('[data-dsh-sw-zoom]').count()).toBe(0)
+  }
+})
+
 test('boxed action slots share the bottom icon row and shrink whole flex cards', async ({ page }) => {
   await boot(page, {mode:'keep', heights:{new:47,nav:113,foot:568}, rows:{'foot0-0:0':103,'foot0:3':75,'foot0:0':117,'foot0:1':49}, hidden:[]}, boxedFooter)
   await sharedBounds(page)
@@ -175,7 +284,10 @@ test('shared contents footer consumes slack before moving the account and surviv
   const foot = await box(page, '#foot')
   const main = await box(page, '#main')
   await drag(page, usage.x + 90, usage.y + usage.height - 1, 50)
-  expect((await box(page, '#usage')).height).toBeCloseTo(usage.height + 50, 0)
+  // Width-constrained magnification may reach a wrap threshold before the
+  // pointer's full delta; the card must grow without becoming empty or clipped.
+  expect((await box(page, '#usage')).height).toBeGreaterThan(usage.height + 20)
+  expect((await box(page, '#usage')).height).toBeLessThanOrEqual(usage.height + 51)
   expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
   expect((await box(page, '#foot')).height).toBeCloseTo(foot.height, 0)
   expect((await box(page, '#main')).height).toBeCloseTo(main.height, 0)
@@ -271,8 +383,9 @@ test('a row inside a resized footer grows its parent instead of being trapped', 
   const before = await box(page, '#usage')
   const parent = await box(page, '#foot')
   await drag(page, before.x + 90, before.y + before.height - 1, 120)
-  expect((await box(page, '#usage')).height).toBeGreaterThan(before.height + 90)
-  expect((await box(page, '#foot')).height).toBeGreaterThan(parent.height + 60)
+  expect((await box(page, '#usage')).height).toBeGreaterThan(before.height + 40)
+  expect((await box(page, '#usage')).height).toBeLessThanOrEqual(before.height * 2 + 1)
+  expect((await box(page, '#foot')).height).toBeGreaterThan(parent.height + 30)
   await noOverlap(page)
 })
 
@@ -305,7 +418,8 @@ test('row growth uses blank space in its parent before moving neighboring panes'
   const account = await box(page, '#account')
   const usage = await box(page, '#usage')
   await drag(page, usage.x + 90, usage.y + usage.height - 1, 50)
-  expect((await box(page, '#usage')).height).toBeCloseTo(usage.height + 50, 0)
+  expect((await box(page, '#usage')).height).toBeGreaterThan(usage.height + 20)
+  expect((await box(page, '#usage')).height).toBeLessThanOrEqual(usage.height + 51)
   expect((await box(page, '#foot')).height).toBeCloseTo(parent.height, 0)
   expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
   await noOverlap(page)
@@ -345,14 +459,14 @@ test('request sizes recover after window expansion and survive reload', async ({
   await noOverlap(page)
 })
 
-test('extreme drags reclaim other panes only after main reaches its minimum', async ({ page }) => {
+test('extreme drags stop at the main floor without reclaiming other panes', async ({ page }) => {
   await boot(page)
   const header = await box(page, '#nav')
   await dragSash(page, 'foot', -100)
   expect((await box(page, '#nav')).height).toBeCloseTo(header.height, 0)
   await dragSash(page, 'foot', -700)
   expect((await box(page, '#main')).height).toBeCloseTo(96, 0)
-  expect((await box(page, '#nav')).height).toBeLessThan(header.height)
+  expect((await box(page, '#nav')).height).toBeCloseTo(header.height, 0)
   await noOverlap(page)
 })
 
@@ -382,7 +496,8 @@ test('direct footer cards and last content row before the account both have usab
   for (const id of ['usage', 'status']) {
     const before = await box(page, '#' + id)
     await drag(page, before.x + 90, before.y + before.height, 25)
-    expect((await box(page, '#' + id)).height).toBeGreaterThan(before.height + 15)
+    expect((await box(page, '#' + id)).height).toBeGreaterThan(before.height + 8)
+    expect(await page.locator('#' + id).evaluate(el => Number(getComputedStyle(el).zoom))).toBeGreaterThan(1.2)
     await noOverlap(page)
   }
 })
@@ -522,13 +637,13 @@ test('growing a child expands saved intermediate groups before the outer pane', 
   const remote = await box(page, '#remote')
   const group = await box(page, '.settings')
   const foot = await box(page, '#foot')
-  await drag(page, usage.x + 90, usage.y + usage.height, 100)
-  expect((await box(page, '#usage')).height).toBeGreaterThan(usage.height + 90)
-  expect((await box(page, '.settings')).height).toBeGreaterThan(group.height + 90)
+  await drag(page, usage.x + 90, usage.y + usage.height, 50)
+  expect((await box(page, '#usage')).height).toBeGreaterThan(usage.height + 20)
+  expect((await box(page, '.settings')).height).toBeGreaterThan(group.height + 45)
   expect((await box(page, '#remote')).height).toBeGreaterThanOrEqual(remote.height - 1)
   const grown = await box(page, '#foot')
-  expect(grown.height).toBeGreaterThan(foot.height + 45)
-  expect(grown.height).toBeLessThan(foot.height + 90)
+  expect(grown.height).toBeGreaterThan(foot.height + 10)
+  expect(grown.height).toBeLessThan(foot.height + 30)
   await noOverlap(page)
 })
 
@@ -578,7 +693,8 @@ test('background avatar fallback reserves only the account row, not the precedin
   const status = await box(page, '#status')
   const account = await box(page, '#account')
   await drag(page, status.x + 90, status.y + status.height, 25)
-  expect((await box(page, '#status')).height).toBeCloseTo(status.height + 25, 0)
+  expect((await box(page, '#status')).height).toBeGreaterThan(status.height + 8)
+  expect((await box(page, '#status')).height).toBeLessThanOrEqual(status.height + 26)
   expect((await box(page, '#account')).height).toBeCloseTo(account.height, 0)
   expect((await box(page, '#account')).y).toBeCloseTo(account.y, 0)
   await noOverlap(page)
