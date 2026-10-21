@@ -102,7 +102,7 @@ async function sharedBounds(page) {
   expect(square.x + square.width).toBeLessThanOrEqual(phone.x + 1)
   expect(account.x + account.width).toBeLessThanOrEqual(square.x + 1)
   for (const r of [square, phone]) {
-    expect(r.y + r.height).toBeCloseTo(account.y + account.height, 0)
+    expect(r.y + r.height / 2).toBeCloseTo(account.y + account.height / 2, 0)
     expect(r.x + r.width).toBeLessThanOrEqual(foot.x + foot.width + 1)
   }
   expect((await box(page, '#usage')).y).toBeGreaterThanOrEqual(main.y + main.height - 1)
@@ -122,6 +122,60 @@ async function boxedFooter(page) {
     el.style.flexDirection = 'column'
   })
 }
+
+test('marked boundary: overflowing workspace rows cannot paint over the separated usage card', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:440}, rows:{}, hidden:[]}, async page => {
+    await boxedFooter(page)
+    await page.locator('.workspace').evaluate(el => {
+      const overlay = document.createElement('div')
+      overlay.id = 'conversation-overlay'
+      overlay.style.cssText = 'height:900px;flex:none;background:red'
+      el.append(overlay)
+    })
+  })
+  const main = await box(page, '#main'), card = await box(page, '#usage')
+  expect(card.y - main.y - main.height).toBeGreaterThanOrEqual(8)
+  expect(await page.evaluate(({x,y}) => !!document.elementFromPoint(x,y)?.closest('#main'),
+    {x:card.x + 40, y:card.y + 20})).toBe(false)
+})
+
+test('marked status: old small heights and further shrinking keep text readable', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:440}, rows:{'foot:4':18}, hidden:[]}, async page => {
+    await boxedFooter(page)
+    await page.locator('#status').evaluate(el => {
+      // Collapsed dsh-usage status uses nested 12px labels, not a text node
+      // inheriting the container's font size.
+      el.innerHTML = '<span style="font-size:12px;display:flex;gap:6px;align-items:baseline;white-space:nowrap"><span>DeepSeek Account</span><span>空闲 今日消费</span><b>¥3.83</b></span>'
+    })
+  })
+  await expect(page.locator('#status')).toHaveAttribute('data-dsh-sw-row', 'foot:4')
+  const effectiveFont = () => page.locator('#status').evaluate(el => parseFloat(getComputedStyle(el.firstElementChild).fontSize) * el.getBoundingClientRect().height / parseFloat(getComputedStyle(el).height))
+  expect(await effectiveFont()).toBeGreaterThanOrEqual(10.95)
+  const status = await box(page, '#status')
+  await drag(page, status.x + 100, status.y + status.height - 1, -100)
+  expect(await effectiveFont()).toBeGreaterThanOrEqual(10.95)
+  await sharedBounds(page)
+  await page.locator('#root').screenshot({path:test.info().outputPath('marked-sidebar.png')})
+})
+
+test('marked entries: bottom controls have space and align with the account center', async ({ page }) => {
+  await boot(page, {mode:'keep', heights:{foot:440}, rows:{}, hidden:[]}, boxedFooter)
+  const account = await box(page, '#account'), square = await box(page, '#square'), phone = await box(page, '#phone')
+  expect(phone.x - square.x - square.width).toBeGreaterThanOrEqual(8)
+  for (const entry of [square, phone]) expect(entry.y + entry.height / 2).toBeCloseTo(account.y + account.height / 2, 0)
+})
+
+test('marked entries: native row gaps remain budgeted when footer slack is exhausted', async ({ page }) => {
+  for (const width of [220, 268]) for (const gap of [8, 16]) {
+    await boot(page, {mode:'keep', heights:{foot:440}, rows:{}, hidden:[]}, async page => {
+      await boxedFooter(page)
+      await page.locator('#root').evaluate((el, width) => el.style.width = width + 'px', width)
+      await page.locator('#foot').evaluate((el, gap) => el.style.rowGap = gap + 'px', gap)
+    })
+    await dragSash(page, 'foot', 650)
+    await sharedBounds(page)
+  }
+})
 
 test('flex-column framed cards scale all text instead of resizing their internal lines', async ({ page }) => {
   await boot(page, undefined, async page => {
@@ -586,8 +640,8 @@ test('collapsed main still leaves the account visible and footer adjustable', as
 })
 
 test('unloading restores native dimensions and removes resize handlers', async ({ page }) => {
-  await boot(page)
-  const before = await box(page, '#foot')
+  let before
+  await boot(page, undefined, async page => { before = await box(page, '#foot') })
   await dragSash(page, 'foot', 60)
   await page.evaluate(() => window.dispose())
   await page.waitForTimeout(200)

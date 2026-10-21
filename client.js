@@ -51,7 +51,7 @@ window.__ModuleLoader__.load({
 
     // 版本号必须与 package.json 一致（夹具里有断言）。宿主加载的是哪一版，
     // 靠 data-dsh-sw-version 属性和 BOOT_KEY 里的启动记录就能确认，不用猜。
-    const PLUGIN_VERSION = '0.6.23'
+    const PLUGIN_VERSION = '0.6.24'
     const BOOT_KEY = 'dsh-sidebar-sections:boot'
     const DUMP_KEY = 'dsh-sidebar-sections:dump'
     const STORE_KEY = 'dsh-sidebar-sections:v5'
@@ -87,8 +87,9 @@ window.__ModuleLoader__.load({
     }
     /** 主区（工作区/会话）至少留这么高，否则只剩一条被截断的会话行，看起来像“压住了”。 */
     const MIN_MAIN = 96
-    /** 内容超过分配高度时，最多缩到原尺寸的 42%（字号 14 → 5.9，仍可见）。 */
+    /** 多行卡最小 42%；单行底栏文字另受可读字号下限约束。 */
     const MIN_FIT = 0.42
+    const MIN_TEXT = 11
     // A card is content, not an empty spacer: magnify the whole unit, bounded
     // to twice its native size. Pane slack belongs above the account instead.
     const MAX_FIT = 2
@@ -555,6 +556,7 @@ window.__ModuleLoader__.load({
       // same grid as settings, without moving any React-owned elements.
       if (panes.foot) {
         const cs = window.getComputedStyle(panes.foot)
+        layoutStyle(panes.foot, 'padding-top', (parseFloat(cs.paddingTop) || 0) + 8 + 'px')
         if (cs.flexDirection.startsWith('row') && cs.flexWrap === 'wrap') {
           for (const slot of panes.foot.querySelectorAll('[data-slot="sidebar.footer.action"]')) {
             if (window.getComputedStyle(slot).display !== 'none') layoutStyle(slot, 'display', 'contents')
@@ -602,13 +604,25 @@ window.__ModuleLoader__.load({
         if (kids.length) {
           // Padding/borders/gaps, not the container's blank or auto-margin space.
           node.overhead = number(cs.paddingTop) + number(cs.paddingBottom) + number(cs.borderTopWidth) + number(cs.borderBottomWidth)
-            + number(cs.rowGap) * Math.max(0, kids.length - 1) + kids.reduce((sum, kid) => sum + kid.mt + kid.mb, 0)
+            // The shared grid has an additional slack track before its bottom
+            // controls, so it also needs one additional native row gap.
+            + number(cs.rowGap) * Math.max(0, kids.length - 1 + (sharedFooter && kids[kids.length - 1].horizontal ? 1 : 0))
+            + kids.reduce((sum, kid) => sum + kid.mt + kid.mb, 0)
           node.min = node.overhead + kids.reduce((sum, kid) => sum + kid.min, 0)
           node.want = node.overhead + kids.reduce((sum, kid) => sum + kid.want, 0)
         } else {
           // An indivisible horizontal row may wrap the avatar plus action buttons.
           // Do not zoom any ancestor leaf that contains the reserved account row.
-          node.min = el === accountEl || el.contains(accountEl) ? natural : Math.min(natural, Math.max(MIN_ROW, natural * MIN_FIT))
+          const textParts = [el, ...el.querySelectorAll('*')].filter(part =>
+            part.namespaceURI === 'http://www.w3.org/1999/xhtml' &&
+            Array.from(part.childNodes).some(text => text.nodeType === 3 && text.textContent.trim()) &&
+            part.getBoundingClientRect().height > 0 && window.getComputedStyle(part).visibility !== 'hidden'
+          )
+          const textFonts = textParts.map(part => number(window.getComputedStyle(part).fontSize)).filter(font => font > 0)
+          const textRects = textParts.map(part => part.getBoundingClientRect())
+          const singleLine = textRects.length && Math.max(...textRects.map(rect => rect.top)) < Math.min(...textRects.map(rect => rect.bottom))
+          const readableFit = panes.foot?.contains(el) && singleLine && textFonts.length ? Math.min(1, MIN_TEXT / Math.min(...textFonts)) : MIN_FIT
+          node.min = el === accountEl || el.contains(accountEl) ? natural : Math.min(natural, Math.max(MIN_ROW, natural * Math.max(MIN_FIT, readableFit)))
           node.want = natural
         }
         if (key && rowSaved(key) !== null) node.want = Math.max(node.min, rowSaved(key))
@@ -698,7 +712,8 @@ window.__ModuleLoader__.load({
             // retaining React ownership and the native final account/icon row.
             layoutStyle(el, 'display', 'grid')
             layoutStyle(el, 'grid-template-columns', ['minmax(0, 1fr)', ...last.kids.slice(1).map(() => 'max-content')].join(' '))
-            layoutStyle(el, 'grid-template-rows', [...childSizes.slice(0, -1).map((size, i) => (size + kids[i].mt + kids[i].mb) + 'px'), 'minmax(0, 1fr)'].join(' '))
+            layoutStyle(el, 'column-gap', '8px')
+            layoutStyle(el, 'grid-template-rows', [...childSizes.slice(0, -1).map((size, i) => (size + kids[i].mt + kids[i].mb) + 'px'), 'minmax(0, 1fr)', last.actual + 'px'].join(' '))
             kids.slice(0, -1).forEach((child, i) => {
               layoutStyle(child.el, 'grid-column', '1 / -1')
               layoutStyle(child.el, 'grid-row', String(i + 1))
@@ -707,8 +722,8 @@ window.__ModuleLoader__.load({
             })
             last.kids.forEach((child, i) => {
               layoutStyle(child.el, 'grid-column', String(i + 1))
-              layoutStyle(child.el, 'grid-row', String(kids.length))
-              layoutStyle(child.el, 'align-self', 'end')
+              layoutStyle(child.el, 'grid-row', String(kids.length + 1))
+              layoutStyle(child.el, 'align-self', 'center')
               layoutStyle(child.el, 'min-width', '0px')
             })
           }
